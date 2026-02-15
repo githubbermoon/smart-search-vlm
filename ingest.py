@@ -10,6 +10,8 @@ import json
 import os
 import re
 import shutil
+import subprocess
+import time
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -164,7 +166,128 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Do not print extracted caption/tags/OCR preview per image.",
     )
+    parser.add_argument(
+        "--memory-threshold-mb",
+        type=int,
+        default=0,
+        help=(
+            "Optional memory guard. If Active+Wired RAM is above this value, gate processing "
+            "(0 disables guard)."
+        ),
+    )
+    parser.add_argument(
+        "--memory-gate-mode",
+        choices=["wait", "skip", "fail"],
+        default="wait",
+        help=(
+            "Behavior when memory is above threshold: wait (default), skip current item, or fail run."
+        ),
+    )
+    parser.add_argument(
+        "--memory-timeout-sec",
+        type=int,
+        default=180,
+        help="Max seconds to wait in memory gate when --memory-gate-mode wait (default: 180).",
+    )
+    parser.add_argument(
+        "--memory-poll-sec",
+        type=float,
+        default=5.0,
+        help="Polling interval for memory gate checks (default: 5.0).",
+    )
+    parser.add_argument(
+        "--memory-relief-cmd",
+        default="",
+        help=(
+            "Optional command to invoke once when memory is above threshold "
+            "(e.g. 'bash /Users/pranjal/clawdGIT/scripts/purge_and_run.sh --relief-only')."
+        ),
+    )
     return parser.parse_args()
+
+
+def _parse_vm_stat_pages(raw: str) -> tuple[int, dict[str, int]]:
+    page_size_match = re.search(r"page size of (\d+) bytes", raw)
+    page_size = int(page_size_match.group(1)) if page_size_match else 4096
+    pages: dict[str, int] = {}
+    for line in raw.splitlines():
+        if ":" not in line:
+            continue
+        key, val = line.split(":", 1)
+        digits = re.sub(r"[^0-9]", "", val)
+        if not digits:
+            continue
+        pages[key.strip().lower()] = int(digits)
+    return page_size, pages
+
+
+def active_wired_mb() -> int:
+    try:
+        raw = subprocess.check_output(["vm_stat"], text=True)
+        page_size, pages = _parse_vm_stat_pages(raw)
+        active = pages.get("pages active", 0)
+        wired = pages.get("pages wired down", 0)
+        used_bytes = (active + wired) * page_size
+        return int(used_bytes / 1024 / 1024)
+    except Exception:
+        return 0
+
+
+def maybe_cleanup_mps_cache() -> None:
+    try:
+        import torch
+
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+    except Exception:
+        pass
+    gc.collect()
+
+
+def enforce_memory_gate(
+    threshold_mb: int,
+    mode: str,
+    timeout_sec: int,
+    poll_sec: float,
+    relief_cmd: str,
+    stage: str,
+) -> bool:
+    if threshold_mb <= 0:
+        return True
+
+    start = time.monotonic()
+    relief_invoked = False
+    while True:
+        used_mb = active_wired_mb()
+        if used_mb <= threshold_mb:
+            return True
+
+        if relief_cmd and not relief_invoked:
+            print(f"[MEM] {stage}: {used_mb}MB > {threshold_mb}MB. Running relief command...")
+            subprocess.run(relief_cmd, shell=True, check=False)
+            relief_invoked = True
+            continue
+
+        if mode == "skip":
+            print(f"[MEM] {stage}: {used_mb}MB > {threshold_mb}MB. Skipping item.")
+            return False
+        if mode == "fail":
+            print(f"[MEM] {stage}: {used_mb}MB > {threshold_mb}MB. Failing run.")
+            return False
+
+        # wait mode
+        elapsed = time.monotonic() - start
+        if elapsed >= max(0, timeout_sec):
+            print(
+                f"[MEM] {stage}: still {used_mb}MB after {int(elapsed)}s "
+                f"(threshold {threshold_mb}MB)."
+            )
+            return False
+        print(
+            f"[MEM] {stage}: {used_mb}MB > {threshold_mb}MB. "
+            f"Waiting {poll_sec:.1f}s..."
+        )
+        time.sleep(max(0.5, poll_sec))
 
 
 def sha256_file(file_path: Path) -> str:
@@ -810,6 +933,20 @@ def main() -> None:
     from mlx_vlm import load
     from sentence_transformers import SentenceTransformer
 
+    if args.memory_threshold_mb > 0:
+        used = active_wired_mb()
+        print(f"[INFO] Memory guard: used={used}MB threshold={args.memory_threshold_mb}MB mode={args.memory_gate_mode}")
+        ok = enforce_memory_gate(
+            threshold_mb=args.memory_threshold_mb,
+            mode=args.memory_gate_mode,
+            timeout_sec=args.memory_timeout_sec,
+            poll_sec=args.memory_poll_sec,
+            relief_cmd=args.memory_relief_cmd,
+            stage="before model load",
+        )
+        if not ok:
+            raise SystemExit("[ERROR] Memory gate blocked model load.")
+
     print(f"[INFO] Loading VLM model: {args.vlm_model}")
     model, processor = load(args.vlm_model)
     vector_table_name = table_for_embed_model(args.embed_model)
@@ -823,6 +960,18 @@ def main() -> None:
     try:
         for file_path in files:
             try:
+                ok = enforce_memory_gate(
+                    threshold_mb=args.memory_threshold_mb,
+                    mode=args.memory_gate_mode,
+                    timeout_sec=args.memory_timeout_sec,
+                    poll_sec=args.memory_poll_sec,
+                    relief_cmd=args.memory_relief_cmd,
+                    stage=f"before {file_path.name}",
+                )
+                if not ok:
+                    if args.memory_gate_mode == "skip":
+                        continue
+                    raise RuntimeError("Memory gate blocked processing.")
                 process_one_image(
                     db,
                     file_path,
@@ -840,18 +989,13 @@ def main() -> None:
                 if file_path.exists() and not args.safe_reprocess:
                     failed_dst = move_to(file_path, FAILED_DIR)
                     print(f"[FAIL] moved to {failed_dst}")
+            finally:
+                maybe_cleanup_mps_cache()
     finally:
         del model
         del processor
         del embedder
-        try:
-            import torch
-
-            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-                torch.mps.empty_cache()
-        except Exception:
-            pass
-        gc.collect()
+        maybe_cleanup_mps_cache()
 
 
 if __name__ == "__main__":
