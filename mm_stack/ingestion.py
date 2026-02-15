@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import fnmatch
+import os
 import shutil
 import traceback
 import uuid
@@ -10,9 +12,13 @@ from typing import Any
 from .clip_embedder import OpenCLIPEmbedder
 from .config import StackConfig
 from .db import (
+    check_stale_files,
     connect_sqlite,
     ensure_schema,
     get_image_by_hash,
+    list_exclusions,
+    list_watched_folders,
+    mark_file_removed,
     upsert_image_metadata,
     upsert_vector_metadata,
 )
@@ -178,28 +184,38 @@ class MultimodalIngestor:
         for candidate in candidates:
             try:
                 source_path = candidate.prepared.source_path
+                # Index-in-place: use original path, or existing path for reprocess
                 if safe_reprocess and candidate.existing_file_path:
-                    media_path = Path(candidate.existing_file_path)
+                    final_path = Path(candidate.existing_file_path)
                 else:
-                    media_path = _copy_to_media(source_path, self.cfg.media_dir)
-                if not safe_reprocess and source_path.exists():
-                    _move_to_processed(source_path, self.cfg.processed_dir)
+                    final_path = source_path
+
+                # Capture filesystem stat for stale detection
+                try:
+                    st = os.stat(str(final_path))
+                    file_inode = st.st_ino
+                    file_size = st.st_size
+                    file_mtime = st.st_mtime
+                except OSError:
+                    file_inode, file_size, file_mtime = 0, 0, 0.0
 
                 ocr_json = _ocr_to_json(candidate.ocr_blocks)
                 tags = candidate.vlm.tags if candidate.vlm else []
                 caption = candidate.vlm.caption if candidate.vlm else ""
                 summary = candidate.vlm.summary if candidate.vlm else ""
+                category = candidate.vlm.category if candidate.vlm else "Other"
 
                 upsert_image_metadata(
                     conn,
                     {
                         "id": candidate.image_id,
-                        "file_path": str(media_path),
+                        "file_path": str(final_path),
                         "sha256_hash": candidate.prepared.sha256_hash,
                         "width": candidate.prepared.width,
                         "height": candidate.prepared.height,
                         "caption": caption,
                         "summary": summary,
+                        "category": category,
                         "tags": tags,
                         "ocr_structured": ocr_json,
                         "ocr_confidence_avg": candidate.ocr_conf_avg,
@@ -213,6 +229,9 @@ class MultimodalIngestor:
                         "text_payload_hash": candidate.text_payload_hash,
                         "clip_content_hash": candidate.prepared.sha256_hash,
                         "is_stale": 0,
+                        "file_inode": file_inode,
+                        "file_size": file_size,
+                        "file_mtime": file_mtime,
                         "created_at": now,
                     },
                 )
@@ -267,3 +286,96 @@ class MultimodalIngestor:
             "skipped_duplicates": skipped_duplicates,
             "failed": failures,
         }
+
+    def ingest_path(self, target: str | Path, *, safe_reprocess: bool = False) -> dict[str, Any]:
+        """
+        Index-in-place: accepts any file or directory. Walks dirs recursively.
+        No copying — stores original paths.
+        """
+        target = Path(target)
+        if target.is_file():
+            if target.suffix.lower() in self.cfg.supported_exts:
+                return self.ingest_batch([target], safe_reprocess=safe_reprocess)
+            return {"ingested": 0, "skipped_duplicates": 0, "failed": [f"{target}: unsupported extension"]}
+        elif target.is_dir():
+            files = [
+                p for p in sorted(target.rglob("*"))
+                if p.is_file() and p.suffix.lower() in self.cfg.supported_exts
+            ]
+            if not files:
+                return {"ingested": 0, "skipped_duplicates": 0, "failed": [f"{target}: no images found"]}
+            return self.ingest_batch(files, safe_reprocess=safe_reprocess)
+        else:
+            return {"ingested": 0, "skipped_duplicates": 0, "failed": [f"{target}: not found"]}
+
+    def rescan_stale(self) -> dict[str, Any]:
+        """
+        Checks all indexed files for inode/size/mtime changes.
+        Re-ingests changed files, marks missing as stale.
+        """
+        conn = connect_sqlite(self.cfg)
+        ensure_schema(conn)
+        changed = check_stale_files(conn)
+        conn.close()
+
+        re_ingest = []
+        removed = []
+        for entry in changed:
+            if entry["reason"] == "missing":
+                c = connect_sqlite(self.cfg)
+                ensure_schema(c)
+                mark_file_removed(c, entry["image_id"])
+                c.close()
+                removed.append(entry["file_path"])
+            else:
+                re_ingest.append(Path(entry["file_path"]))
+
+        result: dict[str, Any] = {"changed": len(changed), "removed": removed}
+        if re_ingest:
+            ingest_result = self.ingest_batch(re_ingest, safe_reprocess=True)
+            result["re_ingested"] = ingest_result["ingested"]
+            result["failed"] = ingest_result["failed"]
+        else:
+            result["re_ingested"] = 0
+            result["failed"] = []
+        return result
+
+    def rescan_watched(self) -> dict[str, Any]:
+        """
+        Scans all enabled watched folders, skipping excluded patterns.
+        Ingests new/changed files in-place.
+        """
+        conn = connect_sqlite(self.cfg)
+        ensure_schema(conn)
+        folders = list_watched_folders(conn)
+        exclusions = list_exclusions(conn)
+        conn.close()
+
+        exclude_patterns = [e["pattern"] for e in exclusions]
+        all_files: list[Path] = []
+
+        for folder in folders:
+            if not folder["enabled"]:
+                continue
+            folder_path = Path(folder["path"])
+            if not folder_path.is_dir():
+                continue
+            for p in sorted(folder_path.rglob("*")):
+                if not p.is_file() or p.suffix.lower() not in self.cfg.supported_exts:
+                    continue
+                # Check exclusions
+                excluded = False
+                for pattern in exclude_patterns:
+                    if fnmatch.fnmatch(str(p), pattern) or fnmatch.fnmatch(p.name, pattern):
+                        excluded = True
+                        break
+                if not excluded:
+                    all_files.append(p)
+
+        if not all_files:
+            return {"scanned_folders": len([f for f in folders if f["enabled"]]), "new_files": 0, "ingested": 0}
+
+        result = self.ingest_batch(all_files, safe_reprocess=False)
+        result["scanned_folders"] = len([f for f in folders if f["enabled"]])
+        result["new_files"] = len(all_files)
+        return result

@@ -25,6 +25,7 @@ class PreparedImage:
 class VLMOutput:
     caption: str
     summary: str
+    category: str
     tags: list[str]
     raw_output: str
 
