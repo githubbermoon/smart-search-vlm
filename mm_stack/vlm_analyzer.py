@@ -8,7 +8,7 @@ from .models import OCRBlock, VLMOutput
 from .utils import cleanup_torch_mps
 
 
-def _parse_json_like(text: str) -> tuple[str, str, list[str]]:
+def _parse_json_like(text: str) -> tuple[str, str, str, list[str]]:
     candidate = (text or "").strip()
     start = candidate.find("{")
     end = candidate.rfind("}")
@@ -18,6 +18,7 @@ def _parse_json_like(text: str) -> tuple[str, str, list[str]]:
             obj = json.loads(snippet)
             caption = str(obj.get("caption", "")).strip()
             summary = str(obj.get("summary", "")).strip()
+            category = str(obj.get("category", "Other")).strip()
             tags_raw = obj.get("tags", [])
             if isinstance(tags_raw, list):
                 tags = [str(x).strip().lower() for x in tags_raw if str(x).strip()]
@@ -25,7 +26,7 @@ def _parse_json_like(text: str) -> tuple[str, str, list[str]]:
                 tags = [t.strip().lower() for t in re.split(r"[,;|]", tags_raw) if t.strip()]
             else:
                 tags = []
-            return caption, summary, tags[:8]
+            return caption, summary, category, tags[:8]
         except Exception:
             pass
 
@@ -33,7 +34,7 @@ def _parse_json_like(text: str) -> tuple[str, str, list[str]]:
     caption = lines[0][:220] if lines else ""
     summary = lines[1][:400] if len(lines) > 1 else caption
     tags = [t for t in re.split(r"[\s,;|]+", caption.lower()) if len(t) > 3][:6]
-    return caption, summary, tags
+    return caption, summary, "Other", tags
 
 
 class VLMAnalyzer:
@@ -75,10 +76,11 @@ class VLMAnalyzer:
         user_prompt = (
             "You are a deterministic image analysis engine for local indexing.\n"
             "Return valid JSON only with this schema:\n"
-            '{"caption":"","summary":"","tags":["","","","",""]}\n'
+            '{"caption":"","summary":"","category":"","tags":["","","","",""]}\n'
             "Rules:\n"
             "- caption: one concise factual sentence\n"
             "- summary: 2-3 short factual sentences\n"
+            "- category: exactly one of [Finance, Political, Design, Academic, Personal, Technical, Other]\n"
             "- tags: lowercase keywords, no hallucinations\n"
             "- use OCR text only when present\n"
             f"OCR text:\n{ocr_text}\n"
@@ -96,7 +98,7 @@ class VLMAnalyzer:
             repetition_penalty=1.05,
         )
         text = raw.text if hasattr(raw, "text") else str(raw)
-        caption, summary, tags = _parse_json_like(text)
+        caption, summary, category, tags = _parse_json_like(text)
 
         if not caption:
             caption = "image with identifiable visual content"
@@ -105,4 +107,4 @@ class VLMAnalyzer:
         if not tags:
             tags = ["image"]
 
-        return VLMOutput(caption=caption[:220], summary=summary[:600], tags=tags[:8], raw_output=text)
+        return VLMOutput(caption=caption[:220], summary=summary[:600], category=category, tags=tags[:8], raw_output=text)
