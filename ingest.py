@@ -960,18 +960,6 @@ def main() -> None:
     try:
         for file_path in files:
             try:
-                ok = enforce_memory_gate(
-                    threshold_mb=args.memory_threshold_mb,
-                    mode=args.memory_gate_mode,
-                    timeout_sec=args.memory_timeout_sec,
-                    poll_sec=args.memory_poll_sec,
-                    relief_cmd=args.memory_relief_cmd,
-                    stage=f"before {file_path.name}",
-                )
-                if not ok:
-                    if args.memory_gate_mode == "skip":
-                        continue
-                    raise RuntimeError("Memory gate blocked processing.")
                 process_one_image(
                     db,
                     file_path,
