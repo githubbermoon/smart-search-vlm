@@ -1,0 +1,107 @@
+{
+  "schema_version": "eval-v1",
+  "created_at": "2026-02-15T17:46:20.560047+00:00",
+  "note": "Fill with 20 benchmark cases. relevant_image_ids should contain image UUIDs from images table.",
+  "cases": [
+    {
+      "id": "case_01",
+      "query": "",
+      "relevant_image_ids": []
+    },
+    {
+      "id": "case_02",
+      "query": "",
+      "relevant_image_ids": []
+    },
+    {
+      "id": "case_03",
+      "query": "",
+      "relevant_image_ids": []
+    },
+    {
+      "id": "case_04",
+      "query": "",
+      "relevant_image_ids": []
+    },
+    {
+      "id": "case_05",
+      "query": "",
+      "relevant_image_ids": []
+    },
+    {
+      "id": "case_06",
+      "query": "",
+      "relevant_image_ids": []
+    },
+    {
+      "id": "case_07",
+      "query": "",
+      "relevant_image_ids": []
+    },
+    {
+      "id": "case_08",
+      "query": "",
+      "relevant_image_ids": []
+    },
+    {
+      "id": "case_09",
+      "query": "",
+      "relevant_image_ids": []
+    },
+    {
+      "id": "case_10",
+      "query": "",
+      "relevant_image_ids": []
+    },
+    {
+      "id": "case_11",
+      "query": "",
+      "relevant_image_ids": []
+    },
+    {
+      "id": "case_12",
+      "query": "",
+      "relevant_image_ids": []
+    },
+    {
+      "id": "case_13",
+      "query": "",
+      "relevant_image_ids": []
+    },
+    {
+      "id": "case_14",
+      "query": "",
+      "relevant_image_ids": []
+    },
+    {
+      "id": "case_15",
+      "query": "",
+      "relevant_image_ids": []
+    },
+    {
+      "id": "case_16",
+      "query": "",
+      "relevant_image_ids": []
+    },
+    {
+      "id": "case_17",
+      "query": "",
+      "relevant_image_ids": []
+    },
+    {
+      "id": "case_18",
+      "query": "",
+      "relevant_image_ids": []
+    },
+    {
+      "id": "case_19",
+      "query": "",
+      "relevant_image_ids": []
+    },
+    {
+      "id": "case_20",
+      "query": "",
+      "relevant_image_ids": []
+    }
+  ]
+}
