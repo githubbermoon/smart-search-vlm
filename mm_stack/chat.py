@@ -34,6 +34,8 @@ CHAT_STOPWORDS = {
 
 QUERY_EXPANSIONS: dict[str, list[str]] = {
     "jewelry": ["jewellery", "ornament", "ornaments", "necklace", "bracelet", "ring", "earring", "gold"],
+    "code": ["xml", "css", "html", "json", "yaml", "python", "java", "programming"],
+    "programming": ["code", "xml", "css", "python", "java", "script"],
 }
 ROLE_QUERY_TERMS: set[str] = {
     "student", "students", "teacher", "teachers", "professor", "professors",
@@ -66,20 +68,27 @@ class MultimodalChat:
         self.cfg = cfg or StackConfig()
         self.search_engine = MultimodalSearchEngine(self.cfg)
         self.session = ChatSession()
-        self.min_similarity_gate = 0.60
+        self.min_similarity_gate = self.cfg.policy_base_similarity_gate
         self.min_grounding_score = 0.3 # Threshold for "Not found" override
         self.max_context_tokens = 2000
         self.max_image_batch = 3
         self.max_image_size = 768
 
-    @staticmethod
-    def _query_terms(query: str) -> list[str]:
+    def _query_terms(self, query: str) -> list[str]:
         terms: list[str] = []
-        for tok in re.findall(r"[A-Za-z0-9_]+", (query or "").lower()):
+        raw_tokens = re.findall(r"[A-Za-z0-9_]+", (query or "").lower())
+        for tok in raw_tokens:
             if len(tok) < 3 or tok in CHAT_STOPWORDS:
                 continue
             if tok not in terms:
                 terms.append(tok)
+            if self.cfg.legacy_patches_enabled:
+                for extra in QUERY_EXPANSIONS.get(tok, []):
+                    extra_norm = extra.strip().lower()
+                    if len(extra_norm) < 3 or extra_norm in CHAT_STOPWORDS:
+                        continue
+                    if extra_norm not in terms:
+                        terms.append(extra_norm)
         return terms[:8]
 
     def _detect_followup(self, query: str) -> bool:
@@ -156,10 +165,14 @@ class MultimodalChat:
 
         if row is None:
             return None
+        row_file_path = str(row["file_path"])
+        if not Path(row_file_path).exists():
+            logger.warning("Attached image exists in index but missing on disk: %s", row_file_path)
+            return None
 
         return {
             "image_id": str(row["id"]),
-            "file_path": str(row["file_path"]),
+            "file_path": row_file_path,
             "caption": str(row["caption"]),
             "summary": str(row["summary"]),
             "tags": self._parse_tags(str(row["tags"])),
@@ -173,6 +186,12 @@ class MultimodalChat:
         Resizes image to max dimension 768px to save VLM RAM.
         Returns path to resized temp image or original if small enough.
         """
+        if not image_path:
+            return ""
+        input_path = Path(image_path)
+        if not input_path.exists():
+            logger.error("Missing image file for chat context: %s", image_path)
+            return ""
         if not Image:
             return image_path
             
@@ -197,7 +216,7 @@ class MultimodalChat:
                 return str(temp_path)
         except Exception as e:
             logger.error(f"Failed to resize {image_path}: {e}")
-            return image_path
+            return image_path if Path(image_path).exists() else ""
 
     def _filter_ocr_advanced(self, ocr_json: str, query: str) -> tuple[str, list[dict[str, Any]]]:
         """
@@ -458,9 +477,10 @@ class MultimodalChat:
         q = (query or "").lower()
         return bool(re.search(r"\b(compare|vs|versus|difference|similar|like)\b", q))
 
-    @staticmethod
-    def _normalize_query_for_model(query: str) -> str:
+    def _normalize_query_for_model(self, query: str) -> str:
         q = query or ""
+        if not self.cfg.legacy_patches_enabled:
+            return q
         q = re.sub(r"\bjwellery\b", "jewelry", q, flags=re.IGNORECASE)
         q = re.sub(r"\bjewelery\b", "jewelry", q, flags=re.IGNORECASE)
         q = re.sub(r"\bjewellery\b", "jewelry", q, flags=re.IGNORECASE)
@@ -468,9 +488,10 @@ class MultimodalChat:
         q = re.sub(r"\bjewllery\b", "jewelry", q, flags=re.IGNORECASE)
         return q
 
-    @staticmethod
-    def _expand_retrieval_query(query: str) -> str:
+    def _expand_retrieval_query(self, query: str) -> str:
         q = (query or "").strip()
+        if not self.cfg.legacy_patches_enabled:
+            return q
         lowered = q.lower()
         terms: list[str] = []
         for key, extras in QUERY_EXPANSIONS.items():
@@ -533,8 +554,12 @@ class MultimodalChat:
         timings: dict[str, int] = {}
         history_rows = self._normalize_history(history)
         normalized_query = self._normalize_query_for_model(query)
-        retrieval_query = (query or "").strip() or normalized_query
-        matching_query = f"{query} {normalized_query}".strip()
+        retrieval_query = self._expand_retrieval_query((query or "").strip() or normalized_query)
+        matching_query = (
+            f"{query} {normalized_query}".strip()
+            if normalized_query and normalized_query != (query or "")
+            else (query or "").strip()
+        )
         parsed_intent = parse_query(query or "")
         attached_source = self._load_attached_source(
             attached_image_id=attached_image_id,
@@ -581,12 +606,46 @@ class MultimodalChat:
                 )
         timings["retrieval_ms"] = int((time.perf_counter() - retrieval_start) * 1000)
 
+        abstain_recommended = bool(getattr(search_resp, "abstain_recommended", False))
+        if abstain_recommended and not focus_mode and not compare_mode:
+            abstain_answer = (
+                f"I could not find reliable evidence for '{query}' in indexed metadata. "
+                "Try adding concrete attributes, objects, or context."
+            )
+            abstain_sources: list[dict[str, Any]] = []
+            for row in search_resp.results[: max(1, min(self.max_image_batch, top_k))]:
+                abstain_sources.append(
+                    {
+                        "file_path": str(row.get("file_path", "")),
+                        "score": float(row.get("score", 0.0) or 0.0),
+                        "caption": str(row.get("caption", "")),
+                        "summary": str(row.get("summary", "")),
+                        "image_id": str(row.get("image_id", "")),
+                        "tags": row.get("tags", []) if isinstance(row.get("tags", []), list) else [],
+                    }
+                )
+            self.session.add_turn(query, abstain_answer, [s["image_id"] for s in abstain_sources if s["image_id"]])
+            timings["total_ms"] = int((time.perf_counter() - overall_start) * 1000)
+            yield {
+                "type": "complete",
+                "answer": abstain_answer,
+                "sources": abstain_sources,
+                "confidence": "Low",
+                "grounded_score": 0.0,
+                "highlight_regions": [],
+                "timings": timings,
+            }
+            return
+
         # 2. Filter & Gate
-        min_gate = self.min_similarity_gate
+        policy = search_resp.policy_applied or {}
+        min_gate = float(policy.get("similarity_gate", self.min_similarity_gate))
+        lexical_mode = str(policy.get("lexical_mode", "boost"))
+        presence_required = bool(policy.get("presence_required", False))
         if compare_mode:
             # Image-to-image similarity scores are commonly lower than text-hybrid
             # scores; use a lower gate to avoid empty compare results.
-            min_gate = min(0.35, self.min_similarity_gate * 0.5)
+            min_gate = min(0.35, min_gate)
         retrieved = [r for r in search_resp.results if r["score"] >= min_gate]
         if attached_source:
             retrieved = [r for r in retrieved if str(r.get("image_id", "")) != str(attached_source["image_id"])]
@@ -600,13 +659,13 @@ class MultimodalChat:
             ]
             retrieved = fallback_neighbors[: max(1, min(3, top_k))]
 
-        if not retrieved and search_resp.results and parsed_intent.has_constraints():
+        if not retrieved and search_resp.results and (parsed_intent.has_constraints() or presence_required):
             retrieved = search_resp.results[: max(1, min(3, top_k))]
 
         # Prefer semantically+lexically aligned rows for short entity queries.
         overlap_rows = [(self._row_query_overlap(matching_query, r), r) for r in retrieved]
         matched_rows = [r for ov, r in overlap_rows if ov > 0]
-        if matched_rows:
+        if lexical_mode == "enforce" and matched_rows:
             retrieved = matched_rows
 
         if focus_mode and attached_source:
@@ -638,7 +697,16 @@ class MultimodalChat:
         all_context_blocks = [] # For region matching: (image_id, block)
         
         for r in filtered:
-            r_path = self._resize_image_if_needed(r["file_path"])
+            raw_path = str(r.get("file_path", "")).strip()
+            if not raw_path:
+                continue
+            if not Path(raw_path).exists():
+                logger.warning("Skipping stale indexed file missing on disk: %s", raw_path)
+                continue
+            r_path = self._resize_image_if_needed(raw_path)
+            if not r_path or not Path(r_path).exists():
+                logger.warning("Skipping file that could not be prepared for VLM: %s", raw_path)
+                continue
             image_paths.append(r_path)
             
             # Compression Layer
@@ -658,13 +726,28 @@ class MultimodalChat:
             full_context_text += f"{r['caption']} {r.get('summary', '')} {ocr_text} {r['tags']} "
             
             source_metas.append({
-                "file_path": r["file_path"],
+                "file_path": raw_path,
                 "score": r["score"],
                 "caption": r["caption"],
                 "summary": r.get("summary", ""),
                 "image_id": r["image_id"],
                 "tags": r["tags"]
             })
+
+        if not image_paths:
+            yield {
+                "type": "complete",
+                "answer": (
+                    "Retrieved image files are missing from disk. "
+                    "Run rescan/re-ingest to refresh the index paths."
+                ),
+                "sources": [],
+                "confidence": "Low",
+                "grounded_score": 0.0,
+                "highlight_regions": [],
+                "timings": timings,
+            }
+            return
 
         context_str = "\n".join(context_parts)
         history_context = self._history_context(history_rows)
@@ -758,10 +841,11 @@ class MultimodalChat:
                             max_source_score = max((float(s.get("score", 0.0) or 0.0) for s in source_metas), default=0.0)
                             grounded_score = max(grounded_score, min(0.45, max_source_score))
                             confidence = "Medium" if grounded_score >= 0.35 else "Low"
+                    fallback_required_terms = parsed_intent.retrieval_terms if lexical_mode == "enforce" else []
                     fallback, fallback_mode, fallback_support = self._build_fallback_with_support(
                         query,
                         source_metas,
-                        required_terms=parsed_intent.retrieval_terms,
+                        required_terms=fallback_required_terms,
                     )
                     if fallback:
                         full_answer = fallback
@@ -785,10 +869,11 @@ class MultimodalChat:
                         grounded_score = max(grounded_score, 0.45)
                         confidence = "Medium"
                     else:
+                        fallback_required_terms = parsed_intent.retrieval_terms if lexical_mode == "enforce" else []
                         fallback, fallback_mode, fallback_support = self._build_fallback_with_support(
                             query,
                             source_metas,
-                            required_terms=parsed_intent.retrieval_terms,
+                            required_terms=fallback_required_terms,
                         )
                         if fallback:
                             full_answer = fallback

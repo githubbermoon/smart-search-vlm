@@ -99,6 +99,138 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             pattern TEXT NOT NULL UNIQUE,
             added_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS videos (
+            id TEXT PRIMARY KEY,
+            file_path TEXT NOT NULL,
+            duration REAL NOT NULL,
+            created_at TEXT NOT NULL,
+            file_hash TEXT,
+            metadata TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS video_segments (
+            id TEXT PRIMARY KEY,
+            video_id TEXT NOT NULL,
+            start_time REAL NOT NULL,
+            end_time REAL NOT NULL,
+            transcript TEXT,
+            embedding_id TEXT,
+            FOREIGN KEY(video_id) REFERENCES videos(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS clusters (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            topic_label TEXT,
+            centroid_vector TEXT, 
+            created_at TEXT NOT NULL,
+            updated_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS cluster_assignments (
+            item_id TEXT PRIMARY KEY,
+            cluster_id TEXT NOT NULL,
+            distance REAL,
+            assigned_at TEXT,
+            FOREIGN KEY(cluster_id) REFERENCES clusters(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS collections (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            query TEXT NOT NULL,
+            filters TEXT,
+            is_dynamic INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            last_accessed TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS image_entities (
+            id TEXT PRIMARY KEY,
+            image_id TEXT NOT NULL,
+            entity_label TEXT NOT NULL,
+            entity_type TEXT NOT NULL,
+            bbox_json TEXT NOT NULL DEFAULT '[]',
+            confidence REAL NOT NULL DEFAULT 0.0,
+            source_model TEXT NOT NULL DEFAULT '',
+            schema_version TEXT NOT NULL DEFAULT 'entity-v1',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(image_id) REFERENCES images(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS entity_attributes (
+            id TEXT PRIMARY KEY,
+            entity_id TEXT NOT NULL,
+            attr_key TEXT NOT NULL,
+            attr_value TEXT NOT NULL,
+            confidence REAL NOT NULL DEFAULT 0.0,
+            schema_version TEXT NOT NULL DEFAULT 'entity-v1',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(entity_id) REFERENCES image_entities(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS image_relations (
+            id TEXT PRIMARY KEY,
+            image_id TEXT NOT NULL,
+            subject_entity_id TEXT,
+            relation TEXT NOT NULL,
+            object_entity_id TEXT,
+            confidence REAL NOT NULL DEFAULT 0.0,
+            evidence_text TEXT NOT NULL DEFAULT '',
+            schema_version TEXT NOT NULL DEFAULT 'entity-v1',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(image_id) REFERENCES images(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS entity_mentions (
+            id TEXT PRIMARY KEY,
+            image_id TEXT NOT NULL,
+            mention TEXT NOT NULL,
+            mention_type TEXT NOT NULL DEFAULT 'name',
+            confidence REAL NOT NULL DEFAULT 0.0,
+            source_field TEXT NOT NULL DEFAULT 'summary',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(image_id) REFERENCES images(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_image_entities_image_id ON image_entities(image_id);
+        CREATE INDEX IF NOT EXISTS idx_image_entities_label ON image_entities(entity_label);
+        CREATE INDEX IF NOT EXISTS idx_entity_attributes_entity_id ON entity_attributes(entity_id);
+        CREATE INDEX IF NOT EXISTS idx_entity_attributes_key_value ON entity_attributes(attr_key, attr_value);
+        CREATE INDEX IF NOT EXISTS idx_image_relations_image_id ON image_relations(image_id);
+        CREATE INDEX IF NOT EXISTS idx_image_relations_relation ON image_relations(relation);
+        CREATE INDEX IF NOT EXISTS idx_entity_mentions_image_id ON entity_mentions(image_id);
+        CREATE INDEX IF NOT EXISTS idx_entity_mentions_mention ON entity_mentions(mention);
+        CREATE INDEX IF NOT EXISTS idx_images_file_path ON images(file_path);
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS images_fts USING fts5(
+            image_id UNINDEXED,
+            file_path,
+            caption,
+            summary,
+            tags,
+            ocr_structured,
+            tokenize='porter unicode61'
+        );
+
+        CREATE TRIGGER IF NOT EXISTS images_fts_ai AFTER INSERT ON images BEGIN
+            INSERT INTO images_fts(image_id, file_path, caption, summary, tags, ocr_structured)
+            VALUES (new.id, new.file_path, new.caption, new.summary, new.tags, new.ocr_structured);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS images_fts_ad AFTER DELETE ON images BEGIN
+            DELETE FROM images_fts WHERE image_id = old.id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS images_fts_au AFTER UPDATE ON images BEGIN
+            DELETE FROM images_fts WHERE image_id = old.id;
+            INSERT INTO images_fts(image_id, file_path, caption, summary, tags, ocr_structured)
+            VALUES (new.id, new.file_path, new.caption, new.summary, new.tags, new.ocr_structured);
+        END;
         """
     )
 
@@ -108,12 +240,99 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         "ALTER TABLE images ADD COLUMN file_inode INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE images ADD COLUMN file_size INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE images ADD COLUMN file_mtime REAL NOT NULL DEFAULT 0.0",
+        "CREATE TABLE IF NOT EXISTS videos (id TEXT PRIMARY KEY, file_path TEXT NOT NULL, duration REAL NOT NULL, created_at TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS video_segments (id TEXT PRIMARY KEY, video_id TEXT NOT NULL, start_time REAL NOT NULL, end_time REAL NOT NULL, transcript TEXT, embedding_id TEXT, FOREIGN KEY(video_id) REFERENCES videos(id))",
+        "CREATE TABLE IF NOT EXISTS clusters (id TEXT PRIMARY KEY, name TEXT NOT NULL, topic_label TEXT, centroid_vector TEXT, created_at TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS cluster_assignments (item_id TEXT PRIMARY KEY, cluster_id TEXT NOT NULL, distance REAL, FOREIGN KEY(cluster_id) REFERENCES clusters(id))",
+        "CREATE TABLE IF NOT EXISTS collections (id TEXT PRIMARY KEY, name TEXT NOT NULL, query TEXT NOT NULL, filters TEXT, is_dynamic INTEGER DEFAULT 1, created_at TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS image_entities (id TEXT PRIMARY KEY, image_id TEXT NOT NULL, entity_label TEXT NOT NULL, entity_type TEXT NOT NULL, bbox_json TEXT NOT NULL DEFAULT '[]', confidence REAL NOT NULL DEFAULT 0.0, source_model TEXT NOT NULL DEFAULT '', schema_version TEXT NOT NULL DEFAULT 'entity-v1', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS entity_attributes (id TEXT PRIMARY KEY, entity_id TEXT NOT NULL, attr_key TEXT NOT NULL, attr_value TEXT NOT NULL, confidence REAL NOT NULL DEFAULT 0.0, schema_version TEXT NOT NULL DEFAULT 'entity-v1', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS image_relations (id TEXT PRIMARY KEY, image_id TEXT NOT NULL, subject_entity_id TEXT, relation TEXT NOT NULL, object_entity_id TEXT, confidence REAL NOT NULL DEFAULT 0.0, evidence_text TEXT NOT NULL DEFAULT '', schema_version TEXT NOT NULL DEFAULT 'entity-v1', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS entity_mentions (id TEXT PRIMARY KEY, image_id TEXT NOT NULL, mention TEXT NOT NULL, mention_type TEXT NOT NULL DEFAULT 'name', confidence REAL NOT NULL DEFAULT 0.0, source_field TEXT NOT NULL DEFAULT 'summary', created_at TEXT NOT NULL)",
+        "CREATE INDEX IF NOT EXISTS idx_image_entities_image_id ON image_entities(image_id)",
+        "CREATE INDEX IF NOT EXISTS idx_image_entities_label ON image_entities(entity_label)",
+        "CREATE INDEX IF NOT EXISTS idx_entity_attributes_entity_id ON entity_attributes(entity_id)",
+        "CREATE INDEX IF NOT EXISTS idx_entity_attributes_key_value ON entity_attributes(attr_key, attr_value)",
+        "CREATE INDEX IF NOT EXISTS idx_image_relations_image_id ON image_relations(image_id)",
+        "CREATE INDEX IF NOT EXISTS idx_image_relations_relation ON image_relations(relation)",
+        "CREATE INDEX IF NOT EXISTS idx_entity_mentions_image_id ON entity_mentions(image_id)",
+        "CREATE INDEX IF NOT EXISTS idx_entity_mentions_mention ON entity_mentions(mention)",
+        "CREATE INDEX IF NOT EXISTS idx_images_file_path ON images(file_path)",
+        "CREATE VIRTUAL TABLE IF NOT EXISTS images_fts USING fts5(image_id UNINDEXED, file_path, caption, summary, tags, ocr_structured, tokenize='porter unicode61')",
+        "CREATE TRIGGER IF NOT EXISTS images_fts_ai AFTER INSERT ON images BEGIN INSERT INTO images_fts(image_id, file_path, caption, summary, tags, ocr_structured) VALUES (new.id, new.file_path, new.caption, new.summary, new.tags, new.ocr_structured); END",
+        "CREATE TRIGGER IF NOT EXISTS images_fts_ad AFTER DELETE ON images BEGIN DELETE FROM images_fts WHERE image_id = old.id; END",
+        "CREATE TRIGGER IF NOT EXISTS images_fts_au AFTER UPDATE ON images BEGIN DELETE FROM images_fts WHERE image_id = old.id; INSERT INTO images_fts(image_id, file_path, caption, summary, tags, ocr_structured) VALUES (new.id, new.file_path, new.caption, new.summary, new.tags, new.ocr_structured); END",
     ]
     for stmt in _migrations:
         try:
             conn.execute(stmt)
         except sqlite3.OperationalError:
             pass
+
+    # FTS schema compatibility + backfill for older DBs.
+    try:
+        cols = [
+            str(r["name"])
+            for r in conn.execute("PRAGMA table_info(images_fts)").fetchall()
+        ]
+        if "image_id" not in cols:
+            conn.execute("DROP TRIGGER IF EXISTS images_fts_ai")
+            conn.execute("DROP TRIGGER IF EXISTS images_fts_ad")
+            conn.execute("DROP TRIGGER IF EXISTS images_fts_au")
+            conn.execute("DROP TABLE IF EXISTS images_fts")
+            conn.execute(
+                """
+                CREATE VIRTUAL TABLE IF NOT EXISTS images_fts USING fts5(
+                    image_id UNINDEXED,
+                    file_path,
+                    caption,
+                    summary,
+                    tags,
+                    ocr_structured,
+                    tokenize='porter unicode61'
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS images_fts_ai AFTER INSERT ON images BEGIN
+                    INSERT INTO images_fts(image_id, file_path, caption, summary, tags, ocr_structured)
+                    VALUES (new.id, new.file_path, new.caption, new.summary, new.tags, new.ocr_structured);
+                END
+                """
+            )
+            conn.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS images_fts_ad AFTER DELETE ON images BEGIN
+                    DELETE FROM images_fts WHERE image_id = old.id;
+                END
+                """
+            )
+            conn.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS images_fts_au AFTER UPDATE ON images BEGIN
+                    DELETE FROM images_fts WHERE image_id = old.id;
+                    INSERT INTO images_fts(image_id, file_path, caption, summary, tags, ocr_structured)
+                    VALUES (new.id, new.file_path, new.caption, new.summary, new.tags, new.ocr_structured);
+                END
+                """
+            )
+
+        row = conn.execute("SELECT COUNT(*) AS c FROM images_fts").fetchone()
+        fts_count = int(row["c"]) if row is not None else 0
+        row = conn.execute("SELECT COUNT(*) AS c FROM images").fetchone()
+        images_count = int(row["c"]) if row is not None else 0
+        if fts_count < images_count:
+            conn.execute("DELETE FROM images_fts")
+            conn.execute(
+                """
+                INSERT INTO images_fts(image_id, file_path, caption, summary, tags, ocr_structured)
+                SELECT id, file_path, caption, summary, tags, ocr_structured
+                FROM images
+                """
+            )
+    except sqlite3.OperationalError:
+        pass
 
     conn.commit()
 
@@ -127,6 +346,10 @@ def get_image_by_hash(conn: sqlite3.Connection, sha256_hash: str) -> sqlite3.Row
 
 def get_image_by_id(conn: sqlite3.Connection, image_id: str) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM images WHERE id = ? LIMIT 1", (image_id,)).fetchone()
+
+
+def get_image_by_path(conn: sqlite3.Connection, file_path: str) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM images WHERE file_path = ? LIMIT 1", (file_path,)).fetchone()
 
 
 def get_images_by_ids(conn: sqlite3.Connection, ids: list[str]) -> dict[str, sqlite3.Row]:
@@ -335,6 +558,43 @@ def mark_file_removed(conn: sqlite3.Connection, image_id: str) -> None:
     conn.commit()
 
 
+def mark_file_removed_by_path(conn: sqlite3.Connection, file_path: str) -> bool:
+    row = conn.execute("SELECT id FROM images WHERE file_path = ? LIMIT 1", (file_path,)).fetchone()
+    if row is None:
+        return False
+    conn.execute(
+        "UPDATE images SET is_stale = 1, updated_at = ? WHERE id = ?",
+        (utc_now_iso(), str(row["id"])),
+    )
+    conn.commit()
+    return True
+
+
+def update_image_file_location(
+    conn: sqlite3.Connection,
+    *,
+    image_id: str,
+    file_path: str,
+    file_inode: int = 0,
+    file_size: int = 0,
+    file_mtime: float = 0.0,
+) -> None:
+    conn.execute(
+        """
+        UPDATE images
+        SET file_path = ?,
+            file_inode = ?,
+            file_size = ?,
+            file_mtime = ?,
+            is_stale = 0,
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (file_path, int(file_inode), int(file_size), float(file_mtime), utc_now_iso(), image_id),
+    )
+    conn.commit()
+
+
 # ── Watched Folders CRUD ──
 
 def add_watched_folder(conn: sqlite3.Connection, path: str) -> None:
@@ -363,6 +623,13 @@ def list_watched_folders(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return [{"id": r["id"], "path": r["path"], "enabled": bool(r["enabled"]), "added_at": r["added_at"]} for r in rows]
 
 
+def list_enabled_watched_folders(conn: sqlite3.Connection) -> list[str]:
+    rows = conn.execute(
+        "SELECT path FROM watched_folders WHERE enabled = 1 ORDER BY added_at ASC"
+    ).fetchall()
+    return [str(r["path"]) for r in rows if str(r["path"]).strip()]
+
+
 # ── Exclusions CRUD ──
 
 def add_exclusion(conn: sqlite3.Connection, pattern: str) -> None:
@@ -381,3 +648,77 @@ def remove_exclusion(conn: sqlite3.Connection, pattern: str) -> None:
 def list_exclusions(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = conn.execute("SELECT * FROM excluded_paths ORDER BY added_at ASC").fetchall()
     return [{"id": r["id"], "pattern": r["pattern"], "added_at": r["added_at"]} for r in rows]
+
+
+# ── Universal Brain CRUD ──
+
+def upsert_video(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
+    conn.execute(
+        """
+        INSERT INTO videos (id, file_path, duration, created_at, file_hash, metadata)
+        VALUES (:id, :file_path, :duration, :created_at, :file_hash, :metadata)
+        ON CONFLICT(id) DO UPDATE SET
+            file_path=excluded.file_path,
+            duration=excluded.duration,
+            file_hash=excluded.file_hash,
+            metadata=excluded.metadata
+        """,
+        row,
+    )
+
+def upsert_video_segment(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
+    conn.execute(
+        """
+        INSERT INTO video_segments (id, video_id, start_time, end_time, transcript, embedding_id)
+        VALUES (:id, :video_id, :start_time, :end_time, :transcript, :embedding_id)
+        ON CONFLICT(id) DO UPDATE SET
+            start_time=excluded.start_time,
+            end_time=excluded.end_time,
+            transcript=excluded.transcript,
+            embedding_id=excluded.embedding_id
+        """,
+        row,
+    )
+
+def upsert_cluster(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
+    row["updated_at"] = utc_now_iso()
+    conn.execute(
+        """
+        INSERT INTO clusters (id, name, topic_label, centroid_vector, created_at, updated_at)
+        VALUES (:id, :name, :topic_label, :centroid_vector, :created_at, :updated_at)
+        ON CONFLICT(id) DO UPDATE SET
+            name=excluded.name,
+            topic_label=excluded.topic_label,
+            centroid_vector=excluded.centroid_vector,
+            updated_at=excluded.updated_at
+        """,
+        row,
+    )
+
+def upsert_cluster_assignment(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
+    conn.execute(
+        """
+        INSERT INTO cluster_assignments (item_id, cluster_id, distance, assigned_at)
+        VALUES (:item_id, :cluster_id, :distance, :assigned_at)
+        ON CONFLICT(item_id) DO UPDATE SET
+            cluster_id=excluded.cluster_id,
+            distance=excluded.distance,
+            assigned_at=excluded.assigned_at
+        """,
+        row,
+    )
+
+def upsert_collection(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
+    conn.execute(
+        """
+        INSERT INTO collections (id, name, query, filters, is_dynamic, created_at, last_accessed)
+        VALUES (:id, :name, :query, :filters, :is_dynamic, :created_at, :last_accessed)
+        ON CONFLICT(id) DO UPDATE SET
+            name=excluded.name,
+            query=excluded.query,
+            filters=excluded.filters,
+            is_dynamic=excluded.is_dynamic,
+            last_accessed=excluded.last_accessed
+        """,
+        row,
+    )

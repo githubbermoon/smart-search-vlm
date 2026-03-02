@@ -10,6 +10,8 @@ dependencies = [
     "open-clip-torch",
     "pillow",
     "pyobjc-framework-Vision",
+    "rapidfuzz",
     "sentence-transformers",
     "sqlite-utils",
+    "watchdog",
 ]

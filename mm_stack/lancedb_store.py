@@ -107,3 +107,10 @@ class LanceStore:
         if len(subset) == 0:
             return None
         return [float(x) for x in subset.iloc[0]["embedding"]]
+
+    def get_all_clip_vectors(self) -> tuple[list[str], list[list[float]]]:
+        if self.cfg.clip_index_name not in self._table_names():
+            return [], []
+        table = self.db.open_table(self.cfg.clip_index_name)
+        df = table.to_pandas()
+        return df["image_id"].tolist(), df["embedding"].tolist()

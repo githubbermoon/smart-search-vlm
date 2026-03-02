@@ -27,7 +27,10 @@ class VLMOutput:
     summary: str
     category: str
     tags: list[str]
-    raw_output: str
+    raw_output: str = ""
+    entities: list[dict] | None = None
+    relations: list[dict] | None = None
+    mentions: list[dict] | None = None
 
 
 @dataclass
@@ -39,3 +42,7 @@ class SearchResult:
     tags: list[str]
     score: float
     routing_source: str
+    video_id: str | None = None
+    start_time: float | None = None
+    end_time: float | None = None
+    video_path: str | None = None

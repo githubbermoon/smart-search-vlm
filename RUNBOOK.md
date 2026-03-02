@@ -2,6 +2,10 @@
 
 Operational guide for `/Users/pranjal/garage/smart_stack`.
 
+MM-only architecture note:
+- `mm_cli.py` + `mm_stack/` is the active ingest/search pipeline.
+- `ingest.py` and `search.py` are compatibility wrappers that forward to multimodal.
+
 ## 1. Scope
 
 Use this when:
@@ -13,7 +17,7 @@ Use this when:
 
 ## 2. Runtime Overview
 
-`ingest.py` flow:
+`mm_cli.py ingest-inbox` flow:
 
 1. Ensure directories and SQLite table/index exist
 2. Scan `inbox/` for supported image files
@@ -25,12 +29,12 @@ Use this when:
 8. Copy media into Obsidian `Media/`
 9. Move input file to `processed/`
 
-`search.py` flow:
+`mm_cli.py search` flow:
 
-1. Parse query + optional expansion
-2. Embed query
-3. Vector search in LanceDB (images + optional notes)
-4. Join image metadata from SQLite by `file_hash`
+1. Parse query/image input
+2. Route deterministically (clip/text/hybrid)
+3. Vector search in LanceDB (`clip_index` and/or `text_index`)
+4. Join image metadata from SQLite `images` by `image_id`
 5. Print ranked results; optionally open top hit
 
 `notes_index.py` flow:
@@ -53,7 +57,7 @@ source .venv/bin/activate
 Manual ingest:
 
 ```bash
-python ingest.py
+./mm_cli.py ingest-inbox
 ```
 
 Low-RAM guarded ingest:
@@ -65,12 +69,12 @@ Low-RAM guarded ingest:
 Guarded ingest with explicit knobs:
 
 ```bash
-python ingest.py \
-  --memory-threshold-mb 8704 \
-  --memory-gate-mode wait \
-  --memory-timeout-sec 180 \
-  --memory-poll-sec 5 \
-  --memory-relief-cmd "bash /Users/pranjal/clawdGIT/scripts/purge_and_run.sh --threshold-mb 8704 --relief-only"
+SMART_STACK_MEMORY_THRESHOLD_MB=8704 \
+SMART_STACK_MEMORY_GATE_MODE=wait \
+SMART_STACK_MEMORY_TIMEOUT_SEC=180 \
+SMART_STACK_MEMORY_POLL_SEC=5 \
+SMART_STACK_MEMORY_RELIEF_CMD="bash /Users/pranjal/clawdGIT/scripts/purge_and_run.sh --threshold-mb 8704 --relief-only" \
+./run_guarded_ingest.sh
 ```
 
 Tune app close list for relief command (optional):

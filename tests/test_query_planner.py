@@ -9,6 +9,8 @@ class QueryPlannerTests(unittest.TestCase):
         self.assertIn("man", intent.tokens_normalized)
         self.assertIn("old", intent.attribute_terms)
         self.assertTrue(intent.require_person)
+        self.assertEqual(intent.query_type, "attribute")
+        self.assertGreater(intent.policy_confidence_score, 0.5)
 
     def test_white_check_shirt_having_meal(self):
         intent = parse_query("white check shirt having meal")
@@ -25,6 +27,7 @@ class QueryPlannerTests(unittest.TestCase):
         self.assertIn("bike", intent.retrieval_terms)
         self.assertIn("car", intent.presence_terms)
         self.assertIn("bike", intent.presence_terms)
+        self.assertEqual(intent.query_type, "constrained")
 
     def test_banana_and_clock_next_to_plant(self):
         intent = parse_query("banana and clock next to plant")
@@ -32,12 +35,24 @@ class QueryPlannerTests(unittest.TestCase):
         self.assertIn("banana", intent.retrieval_terms)
         self.assertIn("clock", intent.retrieval_terms)
         self.assertTrue(intent.query_type_flags.compositional)
+        self.assertEqual(intent.query_type, "constrained")
+
+    def test_color_car_uses_car_for_retrieval(self):
+        intent = parse_query("color car")
+        self.assertIn("car", intent.retrieval_terms)
+        self.assertNotIn("color", intent.retrieval_terms)
+        self.assertIn("color", intent.attribute_terms)
 
     def test_legacy_wrapper(self):
         legacy = parse_query_intent("white check shirt, having meal")
         self.assertTrue(legacy.requires_person)
         self.assertTrue(legacy.requires_clothing)
         self.assertIn("shirt", legacy.clothing_terms)
+
+    def test_generic_type(self):
+        intent = parse_query("code")
+        self.assertEqual(intent.query_type, "generic")
+        self.assertGreater(intent.policy_confidence_score, 0.5)
 
 
 if __name__ == "__main__":

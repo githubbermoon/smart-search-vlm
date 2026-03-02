@@ -4,13 +4,16 @@ Local-first image intelligence pipeline for an Obsidian-based second brain.
 
 `smart_stack` ingests screenshots/receipts/images, extracts OCR text, generates captions and tags, stores metadata + embeddings, and lets you semantically search results from the terminal.
 
+MM-only architecture note:
+- `mm_cli.py` + `mm_stack/` is the single active ingestion/search pipeline.
+- `ingest.py` and `search.py` are compatibility wrappers that forward to multimodal.
+
 ## What It Does
 
 - Watches `inbox/` for images (`.png`, `.jpg`, `.jpeg`, `.webp`, `.heic`, `.heif`, `.bmp`, `.tiff`)
 - Runs Apple Vision OCR (native macOS framework)
 - Runs Qwen3-VL (MLX) for caption + tags
-- Embeds combined text with `BAAI/bge-small-en-v1.5`
-- Indexes markdown notes into note vectors (optional)
+- Embeds combined text with Nomic text embeddings (`nomic-ai/nomic-embed-text-v1.5` by default)
 - Writes metadata to SQLite (`~/Pranjal-Obs/clawd/smart_stack.db`)
 - Writes vectors to LanceDB (`~/Pranjal-Obs/clawd/vectors.lance`)
 - Copies media into Obsidian vault (`~/Pranjal-Obs/clawd/Media`)
@@ -20,9 +23,10 @@ Local-first image intelligence pipeline for an Obsidian-based second brain.
 
 ```text
 smart_stack/
-├── ingest.py         # ingestion pipeline
+├── ingest.py         # compatibility wrapper -> mm_cli ingest-inbox
 ├── notes_index.py    # markdown note indexing CLI
-├── search.py         # semantic search CLI
+├── search.py         # compatibility wrapper -> mm_cli search
+├── mm_cli.py         # multimodal CLI (source of truth)
 ├── main.py           # placeholder entrypoint
 ├── RUNBOOK.md        # operational guide
 ├── inbox/            # drop new images here
@@ -58,7 +62,7 @@ uv pip install mlx-vlm lancedb sentence-transformers watchdog python-dotenv sqli
 ```bash
 cd /Users/pranjal/garage/smart_stack
 source .venv/bin/activate
-python ingest.py
+./mm_cli.py ingest-inbox
 ```
 
 Low-RAM guarded run (recommended on 16GB machines):
@@ -68,7 +72,7 @@ cd /Users/pranjal/garage/smart_stack
 ./run_guarded_ingest.sh
 ```
 
-This wrapper calls `ingest.py` with a memory gate and optional relief command hook.
+This wrapper runs one startup memory gate, then calls `mm_cli.py ingest-inbox`.
 Default threshold is `8704MB` (8.5GB, Active+Wired) and is checked once at startup.
 
 Expected output examples:
@@ -79,11 +83,10 @@ Expected output examples:
 
 Model override options:
 
-- `--vlm-model <hf-model-id>` choose VLM at runtime
-- `--embed-model <hf-model-id>` choose embedding model at runtime
-- `--memory-threshold-mb <int>` gate when Active+Wired memory is high
-- `--memory-gate-mode wait|skip|fail` behavior under memory pressure
-- `--memory-relief-cmd "<cmd>"` optional one-shot relief command while gated
+- Set `SMART_STACK_VLM_MODEL=<hf-model-id>` for VLM override
+- Set `SMART_STACK_TEXT_MODEL=<hf-model-id>` for text embedding override
+- Set `SMART_STACK_MEMORY_THRESHOLD_MB=<int>` for guarded runner threshold
+- Set `SMART_STACK_MEMORY_GATE_MODE=wait|skip|fail` for guarded runner behavior
 
 ## Multimodal Stack (Nomic + OpenCLIP)
 
@@ -114,6 +117,12 @@ source .venv/bin/activate
 ./mm_cli.py search "receipt total amount"
 ./mm_cli.py search "poster style like this"
 ./mm_cli.py search --image-path "/absolute/path/to/query_image.jpg"
+
+# Auto-mode strategy (Hybrid V1 default)
+./mm_cli.py search "mountain people lanyard" --mode auto --auto-strategy hybrid --json
+
+# Backward-compatible auto behavior
+./mm_cli.py search "mountain people lanyard" --mode auto --auto-strategy legacy --semantic-fallback-threshold 0 --json
 
 # Re-embed stale entries
 ./mm_cli.py reembed-all

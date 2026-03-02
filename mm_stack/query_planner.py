@@ -115,6 +115,8 @@ SYNONYM_EXPANSIONS: dict[str, tuple[str, ...]] = {
     "checkered": ("check", "checked", "plaid"),
 }
 
+IDENTITY_CUE_TERMS: set[str] = {"named", "person", "people", "photo", "photos", "picture", "pictures"}
+
 
 def _uniq(values: list[str]) -> list[str]:
     out: list[str] = []
@@ -134,6 +136,43 @@ def _expand_attribute_terms(values: list[str]) -> list[str]:
     for value in list(values):
         out.extend(list(SYNONYM_EXPANSIONS.get(value, ())))
     return _uniq(out)
+
+
+def _classify_query_type(
+    *,
+    raw_query: str,
+    tokens: list[str],
+    retrieval_terms: list[str],
+    relation_terms: list[str],
+    attribute_terms: list[str],
+    name_terms: list[str],
+    require_presence: bool,
+) -> tuple[str, float]:
+    token_set = set(tokens)
+    has_identity_signal = bool(name_terms) or bool(token_set & IDENTITY_CUE_TERMS and re.search(r"\b[A-Z][a-z]{2,}\b", raw_query or ""))
+    has_constrained_signal = bool(relation_terms) or bool(require_presence and len(retrieval_terms) >= 2)
+    has_attribute_signal = bool(attribute_terms)
+
+    if has_identity_signal:
+        query_type = "identity"
+        confidence = 0.90 if name_terms else 0.72
+    elif has_constrained_signal:
+        query_type = "constrained"
+        confidence = 0.88 if len(retrieval_terms) >= 2 else 0.74
+    elif has_attribute_signal:
+        query_type = "attribute"
+        confidence = 0.82 if retrieval_terms else 0.68
+    else:
+        query_type = "generic"
+        confidence = 0.70 if len(retrieval_terms) <= 2 else 0.58
+
+    # Ambiguous patterns should reduce confidence so policy can safely fallback.
+    active_signals = sum(
+        1 for flag in (has_identity_signal, has_constrained_signal, has_attribute_signal) if flag
+    )
+    if active_signals > 1:
+        confidence = max(0.45, confidence - 0.12)
+    return query_type, max(0.0, min(1.0, confidence))
 
 
 def parse_query(raw_query: str) -> QueryIntent:
@@ -193,6 +232,15 @@ def parse_query(raw_query: str) -> QueryIntent:
     )
 
     require_presence = bool(multi_object or (attribute_terms and retrieval_terms))
+    query_type, policy_confidence_score = _classify_query_type(
+        raw_query=raw_query or "",
+        tokens=tokens,
+        retrieval_terms=retrieval_terms,
+        relation_terms=relation_terms,
+        attribute_terms=attribute_terms,
+        name_terms=name_terms,
+        require_presence=require_presence,
+    )
 
     return QueryIntent(
         raw_query=raw_query or "",
@@ -209,6 +257,8 @@ def parse_query(raw_query: str) -> QueryIntent:
         name_terms=name_terms,
         relation_pairs=[],
         query_type_flags=flags,
+        query_type=query_type,
+        policy_confidence_score=policy_confidence_score,
         require_person=require_person,
         require_presence=require_presence,
     )

@@ -9,9 +9,8 @@ import subprocess
 from pathlib import Path
 
 STACK_ROOT = Path("/Users/pranjal/garage/smart_stack")
-SEARCH = STACK_ROOT / "search.py"
+MM_CLI = STACK_ROOT / "mm_cli.py"
 PYTHON = STACK_ROOT / ".venv" / "bin" / "python"
-MARKER = "@@SMARTSTACK_JSON@@"
 
 
 def parse_args() -> argparse.Namespace:
@@ -30,18 +29,17 @@ def main() -> None:
 
     cmd = [
         str(PYTHON),
-        str(SEARCH),
+        str(MM_CLI),
+        "search",
         query,
-        "--embed-model",
-        args.embed_model,
         "-n",
         str(max(1, args.top_k)),
-        "--min-score",
-        str(args.min_score),
         "--json",
     ]
-    if not args.with_notes:
-        cmd.append("--no-notes")
+    if args.embed_model:
+        print(f"[WARN] --embed-model is ignored by multimodal CLI at query time ({args.embed_model}).")
+    if args.with_notes:
+        print("[WARN] --with-notes is ignored. Multimodal index is image-first.")
 
     proc = subprocess.run(cmd, cwd=str(STACK_ROOT), text=True, capture_output=True)
     output = "\n".join([proc.stdout or "", proc.stderr or ""]).strip()
@@ -52,30 +50,36 @@ def main() -> None:
             print(output)
         raise SystemExit(proc.returncode)
 
-    line = next((ln for ln in output.splitlines() if MARKER in ln), "")
-    if not line:
-        print("No JSON payload returned by search.")
-        if output:
-            print(output)
-        raise SystemExit(2)
-
-    payload = line.split(MARKER, 1)[1]
-    data = json.loads(payload)
-    rows = data.get("results", [])
+    data = json.loads(proc.stdout)
+    rows = []
+    for row in data.get("results", []):
+        score = float(row.get("score", 0.0) or 0.0)
+        if score < args.min_score:
+            continue
+        file_path = str(row.get("file_path", ""))
+        rows.append(
+            {
+                "source": str(row.get("source", "image")),
+                "filename": Path(file_path).name or "unknown",
+                "score": f"{score:.4f}",
+                "caption": str(row.get("caption", "")),
+                "path": file_path,
+            }
+        )
 
     if not rows:
         print("No matches found.")
         return
 
     print(f"Query: {query}")
-    print(f"Model: {data.get('embed_model', '')}")
+    print(f"Routing: {data.get('routing_mode', '')}")
     print(f"Results: {len(rows)}")
     for idx, row in enumerate(rows, start=1):
         source = str(row.get("source", "?"))
         filename = str(row.get("filename", "unknown"))
         score = str(row.get("score", "-"))
         caption = str(row.get("caption", "")).strip()
-        path = str(row.get("obsidian_path", ""))
+        path = str(row.get("path", ""))
         print(f"{idx}. [{source}] {filename} | score={score}")
         if caption:
             print(f"   caption: {caption}")

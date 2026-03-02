@@ -83,6 +83,26 @@ class SearchRerankTests(unittest.TestCase):
         ranked = self._rerank("car next to bike what color is car", rows)
         self.assertEqual(ranked[0]["image_id"], "true_car")
 
+    def test_color_car_prefers_vehicle_synonyms(self):
+        rows = [
+            {
+                "image_id": "thermal_map",
+                "caption": "temperature residual map with color scales",
+                "summary": "xgboost prediction chart",
+                "tags": ["temperature", "color"],
+                "score": 0.9,
+            },
+            {
+                "image_id": "suv_image",
+                "caption": "red hyundai suv parked near road",
+                "summary": "vehicle comparison scene",
+                "tags": ["vehicle", "suv", "red"],
+                "score": 0.8,
+            },
+        ]
+        ranked = self._rerank("color car", rows)
+        self.assertEqual(ranked[0]["image_id"], "suv_image")
+
 
 if __name__ == "__main__":
     unittest.main()

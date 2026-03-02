@@ -49,3 +49,63 @@ def hybrid_fuse(
         )
     out.sort(key=lambda x: x["score"], reverse=True)
     return out
+
+
+def weighted_rrf_fuse(
+    keyword_rows: list[dict[str, Any]],
+    semantic_rows: list[dict[str, Any]],
+    *,
+    rrf_k: int = 60,
+    w_keyword: float = 0.62,
+    w_semantic: float = 0.38,
+) -> list[dict[str, Any]]:
+    keyword_rank: dict[str, int] = {}
+    keyword_score: dict[str, float] = {}
+    for idx, row in enumerate(keyword_rows, start=1):
+        image_id = str(row["image_id"])
+        if image_id in keyword_rank:
+            continue
+        keyword_rank[image_id] = idx
+        keyword_score[image_id] = float(row.get("score", 0.0) or 0.0)
+
+    semantic_rank: dict[str, int] = {}
+    semantic_score: dict[str, float] = {}
+    for idx, row in enumerate(semantic_rows, start=1):
+        image_id = str(row["image_id"])
+        if image_id in semantic_rank:
+            continue
+        semantic_rank[image_id] = idx
+        semantic_score[image_id] = float(row.get("score", 0.0) or 0.0)
+
+    merged_ids = sorted(set(keyword_rank) | set(semantic_rank))
+    out: list[dict[str, Any]] = []
+    for image_id in merged_ids:
+        kr = keyword_rank.get(image_id)
+        sr = semantic_rank.get(image_id)
+        keyword_rrf = (w_keyword / (rrf_k + kr)) if kr is not None else 0.0
+        semantic_rrf = (w_semantic / (rrf_k + sr)) if sr is not None else 0.0
+        fused = keyword_rrf + semantic_rrf
+        out.append(
+            {
+                "image_id": image_id,
+                "score": fused,
+                "keyword_rank": kr,
+                "semantic_rank": sr,
+                "keyword_score": keyword_score.get(image_id, 0.0),
+                "semantic_score": semantic_score.get(image_id, 0.0),
+                "fusion_score": fused,
+            }
+        )
+
+    # Stable deterministic order for tie cases.
+    out.sort(
+        key=lambda row: (
+            -float(row.get("fusion_score", 0.0) or 0.0),
+            min(
+                int(row.get("keyword_rank") or 10**9),
+                int(row.get("semantic_rank") or 10**9),
+            ),
+            str(row.get("image_id", "")),
+        )
+    )
+    return out
