@@ -1,107 +1,149 @@
 {
-  "schema_version": "eval-v1",
-  "created_at": "2026-02-15T17:46:20.560047+00:00",
-  "note": "Fill with 20 benchmark cases. relevant_image_ids should contain image UUIDs from images table.",
+  "schema_version": "eval-v2",
+  "created_at": "2026-03-17T00:00:00+00:00",
+  "note": "Phase-1 benchmark seeded from current indexed corpus. Keep queries stable; update IDs only if full reindex changes UUIDs.",
   "cases": [
     {
       "id": "case_01",
-      "query": "",
-      "relevant_image_ids": []
+      "query": "tent by river in mountains",
+      "relevant_image_ids": ["0de8e25b-ef2e-4ce7-9fdd-8d8fc9a31a13"],
+      "notes": "camping landscape"
     },
     {
       "id": "case_02",
-      "query": "",
-      "relevant_image_ids": []
+      "query": "mountain road with car and truck",
+      "relevant_image_ids": [
+        "fd9d0833-cb65-4952-88af-7bb266bfb2d9",
+        "68a49f86-bb2e-46c4-8dd8-410ee77ec3d1"
+      ],
+      "notes": "mountain roadway"
     },
     {
       "id": "case_03",
-      "query": "",
-      "relevant_image_ids": []
+      "query": "java jagged array bitwise code",
+      "relevant_image_ids": ["d3e0ce4d-b191-4fc6-ae39-df61c51dae61"],
+      "notes": "java ide"
     },
     {
       "id": "case_04",
-      "query": "",
-      "relevant_image_ids": []
+      "query": "static method java code editor screenshot",
+      "relevant_image_ids": [
+        "2b179900-ec7e-4832-ab39-0cc9a6b5bd58",
+        "4c550a0a-3851-4e4c-9d5e-b48f2ee66af0"
+      ],
+      "notes": "java editor dark theme"
     },
     {
       "id": "case_05",
-      "query": "",
-      "relevant_image_ids": []
+      "query": "nptel machine learning youtube statistics page",
+      "relevant_image_ids": [
+        "9be15331-775d-4fbf-bb3c-a9fbc355add2",
+        "be500155-05b9-4509-adec-c9d5b9d86823"
+      ],
+      "notes": "nptel + youtube"
     },
     {
       "id": "case_06",
-      "query": "",
-      "relevant_image_ids": []
+      "query": "diagram showing cookies and http client server",
+      "relevant_image_ids": ["943003e3-5ca4-4149-bfdb-c9e0d83e2105"],
+      "notes": "networking diagram"
     },
     {
       "id": "case_07",
-      "query": "",
-      "relevant_image_ids": []
+      "query": "xml vs xaml google search and blizzard vlog",
+      "relevant_image_ids": ["02ca5074-ad82-483d-b957-c1d996b64f40"],
+      "notes": "split search + video"
     },
     {
       "id": "case_08",
-      "query": "",
-      "relevant_image_ids": []
+      "query": "snowy stockholm bridge night walk",
+      "relevant_image_ids": [
+        "b76bd414-3933-4900-bb62-65521a65b1d6",
+        "ddbd1b6b-a7a0-4f5d-be67-c634de239ce7",
+        "7e77343a-469e-4ca4-93ab-e3feb8576e1f",
+        "556825a7-b1ec-4a1d-a83c-0f86a0424afc"
+      ],
+      "notes": "snow city scenes"
     },
     {
       "id": "case_09",
-      "query": "",
-      "relevant_image_ids": []
+      "query": "secretary of defense youtube with network security textbook",
+      "relevant_image_ids": [
+        "8a2cde7b-51a6-4b2e-b294-802040b8a33b",
+        "579bc7a8-0e80-49f0-b3ae-4d2ca10c502d"
+      ],
+      "notes": "youtube + textbook"
     },
     {
       "id": "case_10",
-      "query": "",
-      "relevant_image_ids": []
+      "query": "http2 jim kurose youtube and textbook",
+      "relevant_image_ids": ["fef15b3d-43c5-472c-9ac1-fe9dcf54e722"],
+      "notes": "http2 lecture"
     },
     {
       "id": "case_11",
-      "query": "",
-      "relevant_image_ids": []
+      "query": "dns youtube with facebook schoolboys plaid uniform",
+      "relevant_image_ids": ["8ae17564-9c5d-470a-a088-1be80da4b204"],
+      "notes": "dns + photo"
     },
     {
       "id": "case_12",
-      "query": "",
-      "relevant_image_ids": []
+      "query": "dash streaming adaptive http cdn textbook",
+      "relevant_image_ids": ["5885f547-45f8-4ba9-b426-5f1428c2e502"],
+      "notes": "dash streaming"
     },
     {
       "id": "case_13",
-      "query": "",
-      "relevant_image_ids": []
+      "query": "socket programming youtube textbook tcp udp",
+      "relevant_image_ids": [
+        "5132ef6d-7672-4dbc-8676-bdef66a145d6",
+        "94b53ea3-7af2-4b5b-9a64-f112fd57bdce",
+        "639ad64d-21c1-4487-8d5d-9a3307214bf3",
+        "12393a3e-3eee-46e6-a102-b5b480d1f9ee"
+      ],
+      "notes": "socket programming series"
     },
     {
       "id": "case_14",
-      "query": "",
-      "relevant_image_ids": []
+      "query": "udp recvfrom no accept listen python",
+      "relevant_image_ids": ["afac7886-bafd-4c62-8bfb-08f30de14f1c"],
+      "notes": "udp explanation"
     },
     {
       "id": "case_15",
-      "query": "",
-      "relevant_image_ids": []
+      "query": "brain shaped neural network diagram learn ml ai",
+      "relevant_image_ids": ["3d7bab57-1b7a-4057-b207-141cc1d22cab"],
+      "notes": "ml learning roadmap"
     },
     {
       "id": "case_16",
-      "query": "",
-      "relevant_image_ids": []
+      "query": "ml ai topics pytorch tensorflow scikit learn",
+      "relevant_image_ids": ["6ff90520-16b8-4493-9acb-59cefb400c78"],
+      "notes": "tooling slide"
     },
     {
       "id": "case_17",
-      "query": "",
-      "relevant_image_ids": []
+      "query": "gpt transformer llm black box slide",
+      "relevant_image_ids": ["6dfdbd4b-1d7f-47d0-adcf-cf10622b5240"],
+      "notes": "llm concepts"
     },
     {
       "id": "case_18",
-      "query": "",
-      "relevant_image_ids": []
+      "query": "crewai langflow n8n vapi livekit tools slide",
+      "relevant_image_ids": ["08de5a7e-d76c-456a-aa7a-36d70bc61b48"],
+      "notes": "ai tools list"
     },
     {
       "id": "case_19",
-      "query": "",
-      "relevant_image_ids": []
+      "query": "mcp servers ai code editors slide",
+      "relevant_image_ids": ["5f1c8eb9-074c-4fbf-a9d5-3dd193fb0228"],
+      "notes": "agent tooling concepts"
     },
     {
       "id": "case_20",
-      "query": "",
-      "relevant_image_ids": []
+      "query": "ai application development goals chatbot saas automation",
+      "relevant_image_ids": ["5b088f5d-f17a-4ff6-b62a-a53b06ee3d99"],
+      "notes": "application outcomes"
     }
   ]
 }

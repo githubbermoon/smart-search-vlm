@@ -1,0 +1,25 @@
+{
+  "schema_version": "eval-thresholds-v1",
+  "updated_at": "2026-03-17T00:00:00+00:00",
+  "min_cases_with_relevance": 20,
+  "min_summary": {
+    "clip": {
+      "precision@5": 0.02,
+      "recall@10": 0.06
+    },
+    "text": {
+      "precision@5": 0.06,
+      "recall@10": 0.15
+    },
+    "hybrid": {
+      "precision@5": 0.10,
+      "recall@10": 0.30
+    }
+  },
+  "min_case_hit_rate_at_10": {
+    "clip": 0.20,
+    "text": 0.45,
+    "hybrid": 0.65
+  },
+  "max_failed_cases_hybrid": 7
+}
