@@ -201,11 +201,13 @@ if [[ "${new_instance}" -eq 0 ]]; then
     fi
 fi
 
+smart_stack_root="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
 echo "[INFO] Launching SmartStackUI..."
+export SMART_STACK_ROOT="${smart_stack_root}"
 "${BINARY_PATH}" &
 app_pid=$!
 
-smart_stack_root="$(cd "${SCRIPT_DIR}/.." && pwd)"
 watchdog_pid=""
 
 kill_descendants() {

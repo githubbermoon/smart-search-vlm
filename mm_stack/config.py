@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -26,23 +26,57 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_path(name: str) -> Path | None:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return None
+    return Path(raw).expanduser()
+
+
+def _default_stack_root() -> Path:
+    configured = _env_path("SMART_STACK_ROOT")
+    if configured is not None:
+        return configured
+    return Path(__file__).resolve().parents[1]
+
+
+def _default_vault_root() -> Path:
+    configured = _env_path("SMART_STACK_VAULT_ROOT")
+    if configured is not None:
+        return configured
+
+    legacy = Path.home() / "Pranjal-Obs" / "clawd"
+    if legacy.exists():
+        return legacy
+
+    return Path.home() / "Library" / "Application Support" / "SmartStack"
+
+
+def _default_stack_path(*parts: str) -> Path:
+    return _default_stack_root().joinpath(*parts)
+
+
+def _default_vault_path(*parts: str) -> Path:
+    return _default_vault_root().joinpath(*parts)
+
+
 @dataclass(frozen=True)
 class StackConfig:
-    stack_root: Path = Path("/Users/pranjal/garage/smart_stack")
-    vault_root: Path = Path("/Users/pranjal/Pranjal-Obs/clawd")
+    stack_root: Path = field(default_factory=_default_stack_root)
+    vault_root: Path = field(default_factory=_default_vault_root)
 
-    sqlite_path: Path = Path("/Users/pranjal/Pranjal-Obs/clawd/smart_stack.db")
-    lancedb_path: Path = Path("/Users/pranjal/Pranjal-Obs/clawd/vectors.lance")
+    sqlite_path: Path = field(default_factory=lambda: _default_vault_path("smart_stack.db"))
+    lancedb_path: Path = field(default_factory=lambda: _default_vault_path("vectors.lance"))
     text_embed_socket_path: str = os.getenv(
         "SMART_STACK_TEXT_EMBED_SOCKET",
         f"/tmp/smart_stack_text_embed_{os.getuid()}.sock",
     )
 
-    inbox_dir: Path = Path("/Users/pranjal/garage/smart_stack/inbox")
-    processed_dir: Path = Path("/Users/pranjal/garage/smart_stack/processed")
-    failed_dir: Path = Path("/Users/pranjal/garage/smart_stack/failed")
-    media_dir: Path = Path("/Users/pranjal/Pranjal-Obs/clawd/Media")
-    preprocessed_dir: Path = Path("/Users/pranjal/garage/smart_stack/.cache/preprocessed")
+    inbox_dir: Path = field(default_factory=lambda: _default_stack_path("inbox"))
+    processed_dir: Path = field(default_factory=lambda: _default_stack_path("processed"))
+    failed_dir: Path = field(default_factory=lambda: _default_stack_path("failed"))
+    media_dir: Path = field(default_factory=lambda: _default_vault_path("Media"))
+    preprocessed_dir: Path = field(default_factory=lambda: _default_stack_path(".cache", "preprocessed"))
 
     clip_index_name: str = "clip_index"
     text_index_name: str = "text_index"

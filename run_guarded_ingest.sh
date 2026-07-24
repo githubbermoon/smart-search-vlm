@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-STACK_ROOT="/Users/pranjal/garage/smart_stack"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+STACK_ROOT="${SMART_STACK_ROOT:-$(cd "${SCRIPT_DIR}" && pwd)}"
 PYTHON_BIN="${STACK_ROOT}/.venv/bin/python"
 MM_CLI="${STACK_ROOT}/mm_cli.py"
 
@@ -9,7 +10,7 @@ MEM_THRESHOLD_MB="${SMART_STACK_MEMORY_THRESHOLD_MB:-8704}"
 MEM_GATE_MODE="${SMART_STACK_MEMORY_GATE_MODE:-wait}"
 MEM_TIMEOUT_SEC="${SMART_STACK_MEMORY_TIMEOUT_SEC:-180}"
 MEM_POLL_SEC="${SMART_STACK_MEMORY_POLL_SEC:-5}"
-MEM_RELIEF_CMD="${SMART_STACK_MEMORY_RELIEF_CMD:-bash /Users/pranjal/clawdGIT/scripts/purge_and_run.sh --threshold-mb 8704 --relief-only}"
+MEM_RELIEF_CMD="${SMART_STACK_MEMORY_RELIEF_CMD:-}"
 
 get_used_mb() {
   vm_stat | awk '
@@ -82,6 +83,10 @@ memory_gate_once() {
 SAFE_REPROCESS=0
 LIMIT=0
 IMAGE_BATCH_SIZE="${SMART_STACK_INGEST_IMAGE_BATCH_SIZE:-}"
+INGEST_PROGRESS="${SMART_STACK_INGEST_PROGRESS:-0}"
+INGEST_PROGRESS_EVERY="${SMART_STACK_INGEST_PROGRESS_EVERY:-10}"
+INGEST_WEBHOOK_URL="${SMART_STACK_INGEST_WEBHOOK_URL:-}"
+INGEST_WEBHOOK_TIMEOUT_SEC="${SMART_STACK_INGEST_WEBHOOK_TIMEOUT_SEC:-2.0}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -126,6 +131,12 @@ if [[ "${LIMIT}" != "0" ]]; then
 fi
 if [[ -n "${IMAGE_BATCH_SIZE}" ]] && [[ "${IMAGE_BATCH_SIZE}" != "0" ]]; then
   args+=("--image-batch-size" "${IMAGE_BATCH_SIZE}")
+fi
+if [[ "${INGEST_PROGRESS}" == "1" ]]; then
+  args+=("--progress" "--progress-every" "${INGEST_PROGRESS_EVERY}")
+fi
+if [[ -n "${INGEST_WEBHOOK_URL}" ]]; then
+  args+=("--webhook-url" "${INGEST_WEBHOOK_URL}" "--webhook-timeout-sec" "${INGEST_WEBHOOK_TIMEOUT_SEC}")
 fi
 
 exec "${args[@]}"

@@ -1,14 +1,15 @@
-#!/Users/pranjal/garage/smart_stack/.venv/bin/python3
+#!/usr/bin/env python3
 """OpenClaw-friendly wrapper for Smart Stack image search."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 from pathlib import Path
 
-STACK_ROOT = Path("/Users/pranjal/garage/smart_stack")
+STACK_ROOT = Path(os.getenv("SMART_STACK_ROOT", Path(__file__).resolve().parent))
 MM_CLI = STACK_ROOT / "mm_cli.py"
 PYTHON = STACK_ROOT / ".venv" / "bin" / "python"
 

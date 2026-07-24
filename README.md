@@ -14,9 +14,9 @@ MM-only architecture note:
 - Runs Apple Vision OCR (native macOS framework)
 - Runs Qwen3-VL (MLX) for caption + tags
 - Embeds combined text with Nomic text embeddings (`nomic-ai/nomic-embed-text-v1.5` by default)
-- Writes metadata to SQLite (`~/Pranjal-Obs/clawd/smart_stack.db`)
-- Writes vectors to LanceDB (`~/Pranjal-Obs/clawd/vectors.lance`)
-- Copies media into Obsidian vault (`~/Pranjal-Obs/clawd/Media`)
+- Writes metadata to SQLite (default: `~/Library/Application Support/SmartStack/smart_stack.db`)
+- Writes vectors to LanceDB (default: `~/Library/Application Support/SmartStack/vectors.lance`)
+- Copies media into the configured vault media directory (default: `~/Library/Application Support/SmartStack/Media`)
 - Moves processed files to `processed/`, failed files to `failed/`
 
 ## Repository Layout
@@ -41,26 +41,63 @@ smart_stack/
 - macOS (Apple Vision + MLX tooling)
 - Apple Silicon recommended
 - Python 3.14 (repo `.python-version` is `3.14`)
-- Obsidian vault at `~/Pranjal-Obs/clawd` (or update paths in code)
+- A local checkout of this repo
+- Optional custom data root via `SMART_STACK_VAULT_ROOT=/absolute/path/to/data-root`
 
 ## Setup
 
 `pyproject.toml` does not currently pin runtime dependencies, so install them explicitly:
 
 ```bash
-cd /Users/pranjal/garage/smart_stack
+cd /path/to/smart_stack
 uv venv --python 3.14
 source .venv/bin/activate
 uv pip install mlx-vlm lancedb sentence-transformers watchdog python-dotenv sqlite-utils pyobjc-framework-Vision rich
 ```
 
+By default Smart Stack uses:
+
+- repo runtime folders: `inbox/`, `processed/`, `failed/`, `.cache/`
+- user data root: `~/Library/Application Support/SmartStack`
+
+Backward-compatibility note:
+
+- if `~/Pranjal-Obs/clawd` already exists on a machine, Smart Stack continues using it automatically
+
+If you want a custom data root:
+
+```bash
+export SMART_STACK_VAULT_ROOT="$HOME/SmartStackData"
+```
+
+## Developer-Installable From Git
+
+This repo is now installable from any clone path on macOS.
+
+```bash
+git clone https://github.com/githubbermoon/smart-search-vlm.git
+cd smart-search-vlm/smart_stack
+uv venv --python 3.14
+source .venv/bin/activate
+uv pip install mlx-vlm lancedb sentence-transformers watchdog python-dotenv sqlite-utils pyobjc-framework-Vision rich
+cd SmartStackUI
+./install_app.sh
+open ~/Applications/SmartStackUI.app
+```
+
+Notes:
+
+- keep the git clone on disk after installing; the app uses that checkout for its Python backend
+- if your clone lives somewhere unusual, the launcher passes the correct repo root automatically
+- if you want a non-default data directory, set `SMART_STACK_VAULT_ROOT` before launching the app
+
 ## Run Ingestion
 
-1. Put images into `/Users/pranjal/garage/smart_stack/inbox`
+1. Put images into `./inbox`
 2. Run:
 
 ```bash
-cd /Users/pranjal/garage/smart_stack
+cd /path/to/smart_stack
 source .venv/bin/activate
 ./mm_cli.py ingest-inbox
 ```
@@ -68,12 +105,26 @@ source .venv/bin/activate
 Low-RAM guarded run (recommended on 16GB machines):
 
 ```bash
-cd /Users/pranjal/garage/smart_stack
+cd /path/to/smart_stack
 ./run_guarded_ingest.sh
 ```
 
 This wrapper runs one startup memory gate, then calls `mm_cli.py ingest-inbox`.
 Default threshold is `8704MB` (8.5GB, Active+Wired) and is checked once at startup.
+
+Detailed ingest telemetry (stderr JSON lines + optional webhook):
+
+```bash
+./mm_cli.py ingest-path "/absolute/path/to/folder" --progress --progress-every 10
+./mm_cli.py rescan-all --progress --webhook-url "https://<your-n8n-webhook>"
+```
+
+Guarded runner env toggles for telemetry:
+
+- `SMART_STACK_INGEST_PROGRESS=1`
+- `SMART_STACK_INGEST_PROGRESS_EVERY=10`
+- `SMART_STACK_INGEST_WEBHOOK_URL=https://...`
+- `SMART_STACK_INGEST_WEBHOOK_TIMEOUT_SEC=2.0`
 
 Expected output examples:
 
@@ -104,7 +155,7 @@ Capabilities:
 CLI entrypoints:
 
 ```bash
-cd /Users/pranjal/garage/smart_stack
+cd /path/to/smart_stack
 source .venv/bin/activate
 
 # Ingest one image
@@ -134,14 +185,14 @@ source .venv/bin/activate
 
 Architecture reference:
 
-- `/Users/pranjal/garage/smart_stack/mm_stack/ARCHITECTURE.md`
+- `mm_stack/ARCHITECTURE.md`
 
 ## Safe Reprocess (Existing Archive)
 
 Re-run OCR/VLM/embedding for files already in `processed/` and safely update existing records by `file_hash`.
 
 ```bash
-cd /Users/pranjal/garage/smart_stack
+cd /path/to/smart_stack
 source .venv/bin/activate
 python ingest.py --safe-reprocess
 ```
@@ -155,7 +206,7 @@ Optional:
 Use this to index by semantic meaning with Nomic:
 
 ```bash
-cd /Users/pranjal/garage/smart_stack
+cd /path/to/smart_stack
 source .venv/bin/activate
 python ingest.py --safe-reprocess --embed-model nomic-ai/nomic-embed-text-v1.5
 ```
@@ -175,7 +226,7 @@ Notes:
 ## Run Search
 
 ```bash
-cd /Users/pranjal/garage/smart_stack
+cd /path/to/smart_stack
 source .venv/bin/activate
 python search.py "receipts from starbucks last month" -n 5
 ```
@@ -194,7 +245,7 @@ Useful flags:
 Create/update semantic vectors for markdown notes in your vault:
 
 ```bash
-cd /Users/pranjal/garage/smart_stack
+cd /path/to/smart_stack
 source .venv/bin/activate
 python notes_index.py --embed-model nomic-ai/nomic-embed-text-v1.5
 ```
@@ -212,7 +263,7 @@ After this, `search.py` returns both images and notes when they share the same e
 Use the wrapper script for bot-friendly output:
 
 ```bash
-cd /Users/pranjal/garage/smart_stack
+cd /path/to/smart_stack
 source .venv/bin/activate
 ./openclaw_imgsearch.py "south indian breakfast" -n 5
 ./openclaw_imgsearch.py "banana" -n 8 --min-score 0.60
@@ -230,8 +281,8 @@ This script internally calls `search.py --json` and prints compact text suitable
 
 A local UI wrapper has been added at:
 
-- `/Users/pranjal/garage/smart_stack/SmartStackUI/Package.swift`
-- `/Users/pranjal/garage/smart_stack/SmartStackUI/Sources/SmartStackUI/main.swift`
+- `SmartStackUI/Package.swift`
+- `SmartStackUI/Sources/SmartStackUI/main.swift`
 
 It supports:
 
@@ -245,7 +296,7 @@ It supports:
 Run via local compatibility wrapper (works around CLT Swift/SDK mismatch):
 
 ```bash
-cd /Users/pranjal/garage/smart_stack/SmartStackUI
+cd /path/to/smart_stack/SmartStackUI
 ./local_run.sh
 ```
 
@@ -254,21 +305,21 @@ cd /Users/pranjal/garage/smart_stack/SmartStackUI
 Build only:
 
 ```bash
-cd /Users/pranjal/garage/smart_stack/SmartStackUI
+cd /path/to/smart_stack/SmartStackUI
 ./local_run.sh --build-only
 ```
 
 If you want to recreate the local SDK cache:
 
 ```bash
-cd /Users/pranjal/garage/smart_stack/SmartStackUI
+cd /path/to/smart_stack/SmartStackUI
 ./local_run.sh --clean-sdk --build-only
 ```
 
 Install a clickable macOS app bundle:
 
 ```bash
-cd /Users/pranjal/garage/smart_stack/SmartStackUI
+cd /path/to/smart_stack/SmartStackUI
 ./install_app.sh
 open ~/Applications/SmartStackUI.app
 ```
@@ -286,17 +337,17 @@ The app also exposes a menu bar dropdown with:
 Crontab example (3:00 AM):
 
 ```cron
-0 3 * * * caffeinate -i /Users/pranjal/garage/smart_stack/.venv/bin/python /Users/pranjal/garage/smart_stack/ingest.py >> /Users/pranjal/garage/smart_stack/night_shift.log 2>&1
+0 3 * * * cd /path/to/smart_stack && caffeinate -i ./.venv/bin/python ./ingest.py >> ./night_shift.log 2>&1
 ```
 
 ## Important Paths
 
-- Ingest input: `/Users/pranjal/garage/smart_stack/inbox`
-- Ingest success archive: `/Users/pranjal/garage/smart_stack/processed`
-- Ingest failures: `/Users/pranjal/garage/smart_stack/failed`
-- SQLite metadata DB: `/Users/pranjal/Pranjal-Obs/clawd/smart_stack.db`
-- LanceDB vectors: `/Users/pranjal/Pranjal-Obs/clawd/vectors.lance`
-- Obsidian media copies: `/Users/pranjal/Pranjal-Obs/clawd/Media`
+- Ingest input: `./inbox`
+- Ingest success archive: `./processed`
+- Ingest failures: `./failed`
+- Default SQLite metadata DB: `~/Library/Application Support/SmartStack/smart_stack.db`
+- Default LanceDB vectors: `~/Library/Application Support/SmartStack/vectors.lance`
+- Default media copies: `~/Library/Application Support/SmartStack/Media`
 
 ## Operations
 

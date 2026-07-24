@@ -1,4 +1,4 @@
-#!/Users/pranjal/garage/smart_stack/.venv/bin/python3
+#!/usr/bin/env python3
 """Index Obsidian markdown notes into LanceDB for semantic search."""
 
 from __future__ import annotations
@@ -14,7 +14,21 @@ from pathlib import Path
 from typing import Any
 
 HOME = Path.home()
-VAULT_PATH = HOME / "Pranjal-Obs" / "clawd"
+
+
+def _default_vault_path() -> Path:
+    configured = os.getenv("SMART_STACK_VAULT_ROOT", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+
+    legacy = HOME / "Pranjal-Obs" / "clawd"
+    if legacy.exists():
+        return legacy
+
+    return HOME / "Library" / "Application Support" / "SmartStack"
+
+
+VAULT_PATH = _default_vault_path()
 LANCEDB_PATH = VAULT_PATH / "vectors.lance"
 SQLITE_PATH = VAULT_PATH / "smart_stack.db"
 
