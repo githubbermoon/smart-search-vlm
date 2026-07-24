@@ -14,3 +14,13 @@ SmartStackUI/.build/
 SmartStackUI/.build-local/
 SmartStackUI/.swiftfix/
 .cache/
+
+# macOS / local runtime artifacts
+.DS_Store
+night_shift.log
+tmp/
+inbox/
+processed/
+failed/
+feasibility_logs/
+*.docx

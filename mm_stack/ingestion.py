@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import fnmatch
+import logging
 import os
 import re
 import shutil
-import traceback
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,11 +22,11 @@ from .db import (
     mark_file_removed,
     update_image_file_location,
     upsert_image_metadata,
-    upsert_image_metadata,
     upsert_vector_metadata,
     upsert_video,
     upsert_video_segment,
 )
+from .ingest_telemetry import IngestTelemetry
 from .entity_memory import replace_image_entity_memory
 from .lancedb_store import LanceStore
 from .models import OCRBlock, PreparedImage, VLMOutput
@@ -37,6 +37,8 @@ from .utils import sha256_text, utc_now_iso
 from .vlm_analyzer import VLMAnalyzer
 from .perception import AudioProcessor, VideoProcessor
 from .config import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -131,12 +133,30 @@ def _extract_text_mentions(text: str) -> list[dict[str, Any]]:
 
 
 class MultimodalIngestor:
-    def __init__(self, cfg: StackConfig | None = None, *, image_batch_size: int | None = None):
+    def __init__(
+        self,
+        cfg: StackConfig | None = None,
+        *,
+        image_batch_size: int | None = None,
+        telemetry: IngestTelemetry | None = None,
+        progress_every: int = 10,
+    ):
         self.cfg = cfg or StackConfig()
         self.cfg.preprocessed_dir.mkdir(parents=True, exist_ok=True)
         configured = int(self.cfg.ingest_image_batch_size)
         override = int(image_batch_size) if image_batch_size is not None else configured
         self.image_batch_size = max(1, override)
+        self.telemetry = telemetry
+        self.progress_every = max(1, int(progress_every))
+
+    def _emit(self, event: str, **payload: Any) -> None:
+        if self.telemetry is None:
+            return
+        try:
+            self.telemetry.emit(event, **payload)
+        except Exception:
+            # Telemetry must never break ingestion.
+            pass
 
     def ingest_image(self, image_path: str | Path, *, safe_reprocess: bool = False) -> dict[str, Any]:
         return self.ingest_batch([Path(image_path)], safe_reprocess=safe_reprocess)
@@ -156,6 +176,11 @@ class MultimodalIngestor:
         """
         Main ingestion entry point. Dispatches based on file type.
         """
+        self._emit(
+            "ingest_batch_started",
+            safe_reprocess=bool(safe_reprocess),
+            input_count=len(paths),
+        )
         video_paths = []
         audio_paths = []
         image_paths = []
@@ -168,7 +193,14 @@ class MultimodalIngestor:
                 audio_paths.append(p)
             elif suffix in self.cfg.supported_exts: # Assume rest are images if extension supported
                 image_paths.append(p)
-        
+
+        self._emit(
+            "ingest_batch_partitioned",
+            image_count=len(image_paths),
+            video_count=len(video_paths),
+            audio_count=len(audio_paths),
+        )
+
         results = {}
         if video_paths:
             results.update(self._ingest_videos(video_paths, safe_reprocess))
@@ -176,7 +208,8 @@ class MultimodalIngestor:
             results.update(self._ingest_audios(audio_paths, safe_reprocess))
         if image_paths:
             results.update(self._ingest_images(image_paths, safe_reprocess))
-            
+
+        self._emit("ingest_batch_completed", **results)
         return results
 
     def _ingest_images(self, image_paths: list[Path], safe_reprocess: bool) -> dict[str, Any]:
@@ -193,20 +226,36 @@ class MultimodalIngestor:
             "relinked_paths": 0,
             "failed": [],
         }
+        stage1_scanned = 0
+        self._emit(
+            "ingest_images_started",
+            safe_reprocess=bool(safe_reprocess),
+            image_count=len(image_paths),
+            batch_size=self.image_batch_size,
+        )
 
         def _flush_candidates() -> None:
             nonlocal candidates
             if not candidates:
                 return
+            batch_size = len(candidates)
+            self._emit("ingest_images_batch_flush_started", candidate_count=batch_size)
             result = self._process_candidates(candidates, safe_reprocess)
             processed["ingested"] += int(result.get("ingested", 0))
             processed["skipped_duplicates"] += int(result.get("skipped_duplicates", 0))
             processed["relinked_paths"] += int(result.get("relinked_paths", 0))
             processed["failed"].extend(list(result.get("failed", [])))
+            self._emit(
+                "ingest_images_batch_flush_completed",
+                candidate_count=batch_size,
+                ingested=int(result.get("ingested", 0)),
+                failed=len(list(result.get("failed", []))),
+            )
             candidates = []
 
         # Stage 1: preprocess + OCR + dedupe check (no CLIP/VLM/text model loaded).
         for image_path in image_paths:
+            stage1_scanned += 1
             try:
                 prepared = preprocess_image(Path(image_path), self.cfg)
                 existing = get_image_by_hash(conn, prepared.sha256_hash)
@@ -230,42 +279,75 @@ class MultimodalIngestor:
                             file_mtime=file_mtime,
                         )
                         relinked_paths += 1
+                        self._emit(
+                            "ingest_image_relinked",
+                            image_id=str(existing["id"]),
+                            old_path=existing_path,
+                            new_path=current_path,
+                        )
                     skipped_duplicates += 1
-                    continue
-                image_id = str(existing["id"]) if existing else str(uuid.uuid4())
-                existing_file_path = str(existing["file_path"]) if existing else None
+                else:
+                    image_id = str(existing["id"]) if existing else str(uuid.uuid4())
+                    existing_file_path = str(existing["file_path"]) if existing else None
 
-                ocr_blocks, ocr_conf = extract_ocr_structured(prepared.normalized_path, prepared.width, prepared.height)
-                candidates.append(
-                    Candidate(
-                        image_id=image_id,
-                        prepared=prepared,
-                        ocr_blocks=ocr_blocks,
-                        ocr_conf_avg=ocr_conf,
-                        existing_file_path=existing_file_path,
+                    ocr_blocks, ocr_conf = extract_ocr_structured(prepared.normalized_path, prepared.width, prepared.height)
+                    candidates.append(
+                        Candidate(
+                            image_id=image_id,
+                            prepared=prepared,
+                            ocr_blocks=ocr_blocks,
+                            ocr_conf_avg=ocr_conf,
+                            existing_file_path=existing_file_path,
+                        )
                     )
-                )
-                if len(candidates) >= self.image_batch_size:
-                    _flush_candidates()
+                    if len(candidates) >= self.image_batch_size:
+                        _flush_candidates()
             except Exception as exc:
                 failures.append(f"{image_path}: {exc}")
-                traceback.print_exc()
+                logger.exception("failed_stage1_preprocess image=%s err=%s", str(image_path), str(exc))
+                self._emit("ingest_image_stage1_failed", path=str(image_path), error=str(exc))
+
+            if stage1_scanned % self.progress_every == 0:
+                self._emit(
+                    "ingest_images_progress",
+                    scanned=stage1_scanned,
+                    total=len(image_paths),
+                    queued=len(candidates),
+                    skipped_duplicates=skipped_duplicates,
+                    relinked_paths=relinked_paths,
+                    failures=len(failures),
+                )
 
         conn.close()
 
         _flush_candidates()
 
-        return {
+        result = {
             "ingested": int(processed.get("ingested", 0)),
             "skipped_duplicates": int(processed.get("skipped_duplicates", 0)) + skipped_duplicates,
             "relinked_paths": int(processed.get("relinked_paths", 0)) + relinked_paths,
             "failed": list(processed.get("failed", [])) + failures,
         }
+        self._emit(
+            "ingest_images_completed",
+            scanned=stage1_scanned,
+            total=len(image_paths),
+            ingested=int(result.get("ingested", 0)),
+            skipped_duplicates=int(result.get("skipped_duplicates", 0)),
+            relinked_paths=int(result.get("relinked_paths", 0)),
+            failed=len(list(result.get("failed", []))),
+        )
+        return result
 
     def _ingest_videos(self, video_paths: list[Path], safe_reprocess: bool) -> dict[str, Any]:
         """
         Ingests videos: Extraction -> Frame Candidates -> Persistence -> Linkage.
         """
+        self._emit(
+            "ingest_videos_started",
+            video_count=len(video_paths),
+            safe_reprocess=bool(safe_reprocess),
+        )
         conn = connect_sqlite(self.cfg)
         ensure_schema(conn)
         
@@ -382,12 +464,15 @@ class MultimodalIngestor:
 
             except Exception as e:
                 failures.append(f"{vid_path}: {e}")
-                traceback.print_exc()
+                logger.exception("failed_video_ingest path=%s err=%s", str(vid_path), str(e))
+                self._emit("ingest_video_failed", path=str(vid_path), error=str(e))
 
         conn.close()
 
         if not candidates:
-             return {"ingested": 0, "failed": failures}
+            out = {"ingested": 0, "failed": failures}
+            self._emit("ingest_videos_completed", **out)
+            return out
 
         # Persist Generic Candidates
         result = self._process_candidates(candidates, safe_reprocess=True) 
@@ -411,6 +496,7 @@ class MultimodalIngestor:
         
         result["video_segments"] = count
         result["failed"].extend(failures)
+        self._emit("ingest_videos_completed", **result)
         return result
 
     def _ingest_audios(self, audio_paths: list[Path], safe_reprocess: bool) -> dict[str, Any]:
@@ -424,14 +510,21 @@ class MultimodalIngestor:
         """
         Shared pipeline: CLIP -> VLM -> TextEmbed -> DB Persist.
         """
+        self._emit(
+            "process_candidates_started",
+            candidate_count=len(candidates),
+            safe_reprocess=bool(safe_reprocess),
+        )
         # Stage 2: CLIP embeddings (Visual Only).
         visual_candidates = [c for c in candidates if c.is_visual]
         if visual_candidates:
+            self._emit("stage_started", stage="clip", count=len(visual_candidates))
             with OpenCLIPEmbedder(self.cfg.clip_model_name) as clip:
                 clip_vectors = clip.encode_images([c.prepared.normalized_path for c in visual_candidates])
                 for candidate, vec in zip(visual_candidates, clip_vectors, strict=True):
                     candidate.clip_vec = vec
-        
+            self._emit("stage_completed", stage="clip", count=len(visual_candidates))
+
         # Audio/Text Candidates need mock CLIP vector? Or allow NULL?
         # Database schema has NOT NULL for clip_vectors? No, separate table.
         # But images table has clip_content_hash.
@@ -443,12 +536,15 @@ class MultimodalIngestor:
 
         # Stage 3: VLM analysis (Visual Only).
         if visual_candidates:
+            self._emit("stage_started", stage="vlm", count=len(visual_candidates))
             with VLMAnalyzer(self.cfg.vlm_model_name) as vlm:
                 for candidate in visual_candidates:
                     candidate.vlm = vlm.analyze(candidate.prepared.normalized_path, candidate.ocr_blocks)
+            self._emit("stage_completed", stage="vlm", count=len(visual_candidates))
 
 
         # Stage 4: text embeddings from caption + summary + OCR text.
+        self._emit("stage_started", stage="text_embed", count=len(candidates))
         with TextEmbedder(self.cfg.text_model_name) as text_embedder:
             payloads = []
             for candidate in candidates:
@@ -458,12 +554,15 @@ class MultimodalIngestor:
             vectors = text_embedder.encode(payloads, is_query=False)
             for candidate, vec in zip(candidates, vectors, strict=True):
                 candidate.text_vec = vec
+        self._emit("stage_completed", stage="text_embed", count=len(candidates))
 
         # Stage 5: persist metadata + vectors.
         ingested_count = 0
+        failures: list[str] = []
         conn = connect_sqlite(self.cfg)
         store = LanceStore(self.cfg)
         now = utc_now_iso()
+        self._emit("stage_started", stage="persist", count=len(candidates))
 
         for candidate in candidates:
             try:
@@ -575,17 +674,42 @@ class MultimodalIngestor:
                 ingested_count += 1
             except Exception as exc:
                 conn.rollback()
-                # failures.append(f"{candidate.prepared.source_path}: {exc}") # Failures list not passed here, swallow or log?
-                # Better to return failures count
-                print(f"Failed to persist candidate {candidate.prepared.source_path}: {exc}")
-                traceback.print_exc()
+                failures.append(f"{candidate.prepared.source_path}: {exc}")
+                logger.exception(
+                    "failed_persist_candidate path=%s err=%s",
+                    str(candidate.prepared.source_path),
+                    str(exc),
+                )
+                self._emit(
+                    "persist_candidate_failed",
+                    path=str(candidate.prepared.source_path),
+                    error=str(exc),
+                )
+            if (ingested_count + len(failures)) % self.progress_every == 0:
+                self._emit(
+                    "stage_progress",
+                    stage="persist",
+                    attempted=ingested_count + len(failures),
+                    total=len(candidates),
+                    ingested=ingested_count,
+                    failed=len(failures),
+                )
 
         conn.close()
-        return {
+        self._emit(
+            "stage_completed",
+            stage="persist",
+            count=len(candidates),
+            ingested=ingested_count,
+            failed=len(failures),
+        )
+        out = {
             "ingested": ingested_count,
-            "failed": [], # TODO: Capture failures better
+            "failed": failures,
             "skipped_duplicates": 0
         }
+        self._emit("process_candidates_completed", **out)
+        return out
 
     def ingest_path(self, target: str | Path, *, safe_reprocess: bool = False) -> dict[str, Any]:
         """
@@ -615,6 +739,7 @@ class MultimodalIngestor:
         Checks all indexed files for inode/size/mtime changes.
         Re-ingests changed files, marks missing as stale.
         """
+        self._emit("rescan_stale_started")
         conn = connect_sqlite(self.cfg)
         ensure_schema(conn)
         changed = check_stale_files(conn)
@@ -633,6 +758,12 @@ class MultimodalIngestor:
                 re_ingest.append(Path(entry["file_path"]))
 
         result: dict[str, Any] = {"changed": len(changed), "removed": removed}
+        self._emit(
+            "rescan_stale_partitioned",
+            changed=len(changed),
+            removed=len(removed),
+            to_reingest=len(re_ingest),
+        )
         if re_ingest:
             ingest_result = self.ingest_batch(re_ingest, safe_reprocess=True)
             result["re_ingested"] = ingest_result["ingested"]
@@ -640,6 +771,7 @@ class MultimodalIngestor:
         else:
             result["re_ingested"] = 0
             result["failed"] = []
+        self._emit("rescan_stale_completed", **result)
         return result
 
     def rescan_watched(self) -> dict[str, Any]:
@@ -647,6 +779,7 @@ class MultimodalIngestor:
         Scans all enabled watched folders, skipping excluded patterns.
         Ingests new/changed files in-place.
         """
+        self._emit("rescan_watched_started")
         conn = connect_sqlite(self.cfg)
         ensure_schema(conn)
         folders = list_watched_folders(conn)
@@ -675,9 +808,12 @@ class MultimodalIngestor:
                     all_files.append(p)
 
         if not all_files:
-            return {"scanned_folders": len([f for f in folders if f["enabled"]]), "new_files": 0, "ingested": 0}
+            out = {"scanned_folders": len([f for f in folders if f["enabled"]]), "new_files": 0, "ingested": 0}
+            self._emit("rescan_watched_completed", **out)
+            return out
 
         result = self.ingest_batch(all_files, safe_reprocess=False)
         result["scanned_folders"] = len([f for f in folders if f["enabled"]])
         result["new_files"] = len(all_files)
+        self._emit("rescan_watched_completed", **result)
         return result

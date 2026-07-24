@@ -1,4 +1,4 @@
-#!/Users/pranjal/garage/smart_stack/.venv/bin/python3
+#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import sys
+import uuid
 import warnings
 from pathlib import Path
 
@@ -16,19 +17,73 @@ logging.basicConfig(stream=sys.stderr, level=logging.ERROR)
 logging.getLogger("transformers").setLevel(logging.ERROR)
 
 from mm_stack.api import (
-    evaluate, ingest_image, reembed_all, search, chat, explain, compare,
+    evaluate, reembed_all, search, chat, explain, compare,
     context_lens,
     timeline,
     photos_list,
     cluster_recalc, cluster_label, cluster_list, cluster_items,
-    ingest_path as api_ingest_path, rescan as api_rescan, rescan_watched as api_rescan_watched,
     watch_live as api_watch_live,
     watch_add, watch_remove, watch_toggle, watch_list,
     exclude_add, exclude_remove, exclude_list,
 )
 from mm_stack.config import StackConfig
 from mm_stack.evaluation import ensure_eval_fixture
+from mm_stack.ingest_telemetry import IngestTelemetry, TelemetryOptions
 from mm_stack.ingestion import MultimodalIngestor
+
+
+def _add_ingest_telemetry_flags(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--progress",
+        action="store_true",
+        help="Emit detailed ingest stage counters to stderr as JSON lines",
+    )
+    parser.add_argument(
+        "--progress-every",
+        type=int,
+        default=10,
+        help="Emit progress event every N processed items (default: 10)",
+    )
+    parser.add_argument(
+        "--webhook-url",
+        default="",
+        help="Optional webhook URL for ingest telemetry events (POST JSON)",
+    )
+    parser.add_argument(
+        "--webhook-timeout-sec",
+        type=float,
+        default=2.0,
+        help="Webhook timeout in seconds (default: 2.0)",
+    )
+
+
+def _new_ingestor(
+    *,
+    cfg: StackConfig,
+    args: argparse.Namespace,
+    command_name: str,
+    image_batch_size: int | None,
+) -> tuple[MultimodalIngestor, IngestTelemetry]:
+    telemetry = IngestTelemetry(
+        run_id=str(uuid.uuid4()),
+        options=TelemetryOptions(
+            command=command_name,
+            emit_to_stderr=bool(getattr(args, "progress", False)),
+            webhook_url=str(getattr(args, "webhook_url", "") or "").strip(),
+            webhook_timeout_sec=float(getattr(args, "webhook_timeout_sec", 2.0)),
+        ),
+    )
+    ingestor = MultimodalIngestor(
+        cfg,
+        image_batch_size=image_batch_size,
+        telemetry=telemetry,
+        progress_every=max(1, int(getattr(args, "progress_every", 10))),
+    )
+    telemetry.emit(
+        "cli_command_started",
+        image_batch_size=(image_batch_size or int(cfg.ingest_image_batch_size)),
+    )
+    return ingestor, telemetry
 
 
 def parse_args() -> argparse.Namespace:
@@ -44,6 +99,7 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Max image candidates per ingest batch (0=default from config/env)",
     )
+    _add_ingest_telemetry_flags(ingest_one)
 
     ingest_inbox = sub.add_parser("ingest-inbox", help="Ingest inbox directory")
     ingest_inbox.add_argument("--limit", type=int, default=0)
@@ -54,6 +110,7 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Max image candidates per ingest batch (0=default from config/env)",
     )
+    _add_ingest_telemetry_flags(ingest_inbox)
 
     search_cmd = sub.add_parser("search", help="Search multimodal indexes")
     search_cmd.add_argument("query", nargs="?", default="")
@@ -139,6 +196,7 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Max image candidates per ingest batch (0=default from config/env)",
     )
+    _add_ingest_telemetry_flags(ingest_path_cmd)
 
     rescan_cmd = sub.add_parser("rescan", help="Rescan indexed files for changes (inode/size/mtime)")
     rescan_cmd.add_argument(
@@ -147,6 +205,7 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Max image candidates per ingest batch (0=default from config/env)",
     )
+    _add_ingest_telemetry_flags(rescan_cmd)
     rescan_all_cmd = sub.add_parser("rescan-all", help="Rescan all watched folders")
     rescan_all_cmd.add_argument(
         "--image-batch-size",
@@ -154,6 +213,7 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Max image candidates per ingest batch (0=default from config/env)",
     )
+    _add_ingest_telemetry_flags(rescan_all_cmd)
     watch_live_cmd = sub.add_parser("watch-live", help="Run low-RAM realtime path watcher")
     watch_live_cmd.add_argument(
         "--hourly-refresh-min",
@@ -233,15 +293,29 @@ def main() -> None:
     batch_size = max(1, int(args.image_batch_size)) if hasattr(args, "image_batch_size") and int(args.image_batch_size) > 0 else None
 
     if args.cmd == "ingest-image":
-        out = ingest_image(
-            args.path,
-            safe_reprocess=args.safe_reprocess,
-            image_batch_size=batch_size,
+        ingestor, telemetry = _new_ingestor(
             cfg=cfg,
+            args=args,
+            command_name=args.cmd,
+            image_batch_size=batch_size,
         )
+        try:
+            out = ingestor.ingest_image(args.path, safe_reprocess=args.safe_reprocess)
+            telemetry.emit("cli_command_completed", **out)
+        finally:
+            telemetry.close()
     elif args.cmd == "ingest-inbox":
-        engine = MultimodalIngestor(cfg, image_batch_size=batch_size)
-        out = engine.ingest_inbox(limit=max(0, args.limit), safe_reprocess=args.safe_reprocess)
+        ingestor, telemetry = _new_ingestor(
+            cfg=cfg,
+            args=args,
+            command_name=args.cmd,
+            image_batch_size=batch_size,
+        )
+        try:
+            out = ingestor.ingest_inbox(limit=max(0, args.limit), safe_reprocess=args.safe_reprocess)
+            telemetry.emit("cli_command_completed", **out)
+        finally:
+            telemetry.close()
     elif args.cmd == "search":
         query = args.query.strip()
         image_path = args.image_path.strip() or None
@@ -359,16 +433,41 @@ def main() -> None:
         else:
             out = evaluate(cfg, fixture_path=(args.fixture or None))
     elif args.cmd == "ingest-path":
-        out = api_ingest_path(
-            args.path,
-            safe_reprocess=args.safe_reprocess,
-            image_batch_size=batch_size,
+        ingestor, telemetry = _new_ingestor(
             cfg=cfg,
+            args=args,
+            command_name=args.cmd,
+            image_batch_size=batch_size,
         )
+        try:
+            out = ingestor.ingest_path(args.path, safe_reprocess=args.safe_reprocess)
+            telemetry.emit("cli_command_completed", **out)
+        finally:
+            telemetry.close()
     elif args.cmd == "rescan":
-        out = api_rescan(image_batch_size=batch_size, cfg=cfg)
+        ingestor, telemetry = _new_ingestor(
+            cfg=cfg,
+            args=args,
+            command_name=args.cmd,
+            image_batch_size=batch_size,
+        )
+        try:
+            out = ingestor.rescan_stale()
+            telemetry.emit("cli_command_completed", **out)
+        finally:
+            telemetry.close()
     elif args.cmd == "rescan-all":
-        out = api_rescan_watched(image_batch_size=batch_size, cfg=cfg)
+        ingestor, telemetry = _new_ingestor(
+            cfg=cfg,
+            args=args,
+            command_name=args.cmd,
+            image_batch_size=batch_size,
+        )
+        try:
+            out = ingestor.rescan_watched()
+            telemetry.emit("cli_command_completed", **out)
+        finally:
+            telemetry.close()
     elif args.cmd == "watch-live":
         out = api_watch_live(
             hourly_refresh_min=max(1, int(args.hourly_refresh_min)),

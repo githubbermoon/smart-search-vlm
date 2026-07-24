@@ -4,7 +4,20 @@ import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
 
-private let stackRoot = "/Users/pranjal/garage/smart_stack"
+private func resolveStackRoot() -> String {
+    let env = ProcessInfo.processInfo.environment
+    if let configured = env["SMART_STACK_ROOT"], !configured.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        return URL(fileURLWithPath: configured).standardizedFileURL.path
+    }
+    return URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .path
+}
+
+private let stackRoot = resolveStackRoot()
 private let guardedIngestScript = "\(stackRoot)/run_guarded_ingest.sh"
 private let venvPython = "\(stackRoot)/.venv/bin/python"
 private let mmCliScript = "\(stackRoot)/mm_cli.py"

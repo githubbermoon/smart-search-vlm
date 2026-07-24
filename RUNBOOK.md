@@ -66,6 +66,22 @@ Low-RAM guarded ingest:
 ./run_guarded_ingest.sh
 ```
 
+Detailed ingest counters (stderr JSON lines):
+
+```bash
+./mm_cli.py ingest-path "/absolute/path/to/folder" --progress --progress-every 10
+./mm_cli.py rescan-all --progress
+```
+
+Webhook integration (n8n/Make/custom endpoint):
+
+```bash
+./mm_cli.py ingest-path "/absolute/path/to/folder" \
+  --progress \
+  --webhook-url "https://<webhook-endpoint>" \
+  --webhook-timeout-sec 2.0
+```
+
 Guarded ingest with explicit knobs:
 
 ```bash
