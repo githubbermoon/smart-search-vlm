@@ -1,6 +1,11 @@
 # Smart Stack
 
-Local-first image intelligence pipeline for an Obsidian-based second brain.
+[![Python CI](https://github.com/githubbermoon/smart-search-vlm/actions/workflows/python-ci.yml/badge.svg)](https://github.com/githubbermoon/smart-search-vlm/actions/workflows/python-ci.yml)
+[![macOS App CI](https://github.com/githubbermoon/smart-search-vlm/actions/workflows/macos-app-ci.yml/badge.svg)](https://github.com/githubbermoon/smart-search-vlm/actions/workflows/macos-app-ci.yml)
+[![Security](https://github.com/githubbermoon/smart-search-vlm/actions/workflows/security.yml/badge.svg)](https://github.com/githubbermoon/smart-search-vlm/actions/workflows/security.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
+Privacy-first, local multimodal search for personal images on macOS, with document ingestion developed as an isolated extension.
 
 `smart_stack` ingests screenshots/receipts/images, extracts OCR text, generates captions and tags, stores metadata + embeddings, and lets you semantically search results from the terminal.
 
@@ -23,6 +28,7 @@ MM-only architecture note:
 
 ```text
 smart_stack/
+├── CONTRIBUTING.md   # contributor workflow and quality requirements
 ├── ingest.py         # compatibility wrapper -> mm_cli ingest-inbox
 ├── notes_index.py    # markdown note indexing CLI
 ├── search.py         # compatibility wrapper -> mm_cli search
@@ -46,13 +52,12 @@ smart_stack/
 
 ## Setup
 
-`pyproject.toml` does not currently pin runtime dependencies, so install them explicitly:
+Create the locked project environment:
 
 ```bash
 cd /path/to/smart_stack
 uv venv --python 3.14
-source .venv/bin/activate
-uv pip install mlx-vlm lancedb sentence-transformers watchdog python-dotenv sqlite-utils pyobjc-framework-Vision rich
+uv sync --locked --all-groups
 ```
 
 By default Smart Stack uses:
@@ -76,10 +81,8 @@ This repo is now installable from any clone path on macOS.
 
 ```bash
 git clone https://github.com/githubbermoon/smart-search-vlm.git
-cd smart-search-vlm/smart_stack
-uv venv --python 3.14
-source .venv/bin/activate
-uv pip install mlx-vlm lancedb sentence-transformers watchdog python-dotenv sqlite-utils pyobjc-framework-Vision rich
+cd smart-search-vlm
+uv sync --locked --all-groups
 cd SmartStackUI
 ./install_app.sh
 open ~/Applications/SmartStackUI.app
@@ -365,3 +368,17 @@ Crontab example (3:00 AM):
 ## Operations
 
 See `RUNBOOK.md` for checks, failure handling, reprocessing flow, and maintenance.
+
+## Contributing and community
+
+- [Contributing guide](CONTRIBUTING.md)
+- [Content-pipeline architecture](docs/architecture/CONTENT_PIPELINES.md)
+- [Security policy](SECURITY.md)
+- [Support guide](SUPPORT.md)
+- [Community code of conduct](CODE_OF_CONDUCT.md)
+
+Development is coordinated through separate image and document integration branches while `master` remains the stable product branch. See the contributing guide for branch selection, required tests, privacy rules, and review standards.
+
+## License
+
+Smart Stack is open-source software licensed under the [Apache License 2.0](LICENSE). Contributions submitted for inclusion in the project are provided under the same license unless explicitly stated otherwise.

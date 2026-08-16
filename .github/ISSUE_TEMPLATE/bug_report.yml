@@ -1,0 +1,72 @@
+name: Bug report
+description: Report a reproducible problem in Smart Stack
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a problem. Remove private media, documents, tokens, network names, and personal paths before submitting.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - Image ingestion
+        - Document ingestion
+        - Search or grounded interaction
+        - macOS application
+        - Android or mobile access
+        - Installation or automation
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: Tag or git commit hash
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include macOS version, Mac model/chip, Python version, Swift version, and installation method.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      placeholder: Provide the smallest reliable sequence of steps.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checklist
+      options:
+        - label: I searched existing issues for this problem.
+          required: true
+        - label: I removed private content, secrets, device names, and personal paths.
+          required: true
+        - label: This is not a vulnerability report.
+          required: true

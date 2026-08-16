@@ -1,0 +1,49 @@
+name: Feature request
+description: Propose a focused product improvement
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: dropdown
+    id: workstream
+    attributes:
+      label: Workstream
+      options:
+        - Image pipeline
+        - Document pipeline
+        - Shared platform
+        - macOS application
+        - Mobile interface
+        - Documentation or developer experience
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the user need without assuming a particular implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility, privacy, and data considerations
+      description: Note effects on existing images, documents, indexes, memory, local-only behavior, or stored data.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checklist
+      options:
+        - label: I searched existing issues and pull requests.
+          required: true
+        - label: I have not included private user data or secrets.
+          required: true
