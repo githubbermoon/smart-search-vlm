@@ -12,7 +12,10 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "SmartStackUI",
-            path: "Sources/SmartStackUI"
+            path: "Sources/SmartStackUI",
+            swiftSettings: [
+                .unsafeFlags(["-parse-as-library"])
+            ]
         )
     ]
 )

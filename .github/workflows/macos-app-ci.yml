@@ -1,0 +1,47 @@
+name: macOS App CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+concurrency:
+  group: macos-app-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build
+    runs-on: macos-15
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Show toolchain
+        run: |
+          uname -m
+          xcodebuild -version
+          swift --version
+
+      - name: Validate launcher scripts
+        run: bash -n SmartStackUI/local_run.sh SmartStackUI/install_app.sh run_mobile_tailscale.sh stop_mobile_tailscale.sh run_guarded_ingest.sh
+
+      - name: Build Swift package
+        run: swift build --package-path SmartStackUI
+
+      - name: Build application launcher binary
+        run: SmartStackUI/local_run.sh --build-only --force-build
+
+      - name: Build and validate application bundle
+        env:
+          APP_DEST: ${{ runner.temp }}/SmartStackUI.app
+        run: |
+          SmartStackUI/install_app.sh --dest "$APP_DEST"
+          test -x "$APP_DEST/Contents/MacOS/SmartStackUI"
+          test -x "$APP_DEST/Contents/Resources/SmartStackUI.bin"
+          plutil -lint "$APP_DEST/Contents/Info.plist"
