@@ -221,6 +221,10 @@ A pull request must explain:
 
 Keep unrelated formatting, generated files, and personal configuration out of the diff. Resolve every review conversation or explain why the requested change should not be made.
 
+## Contribution licensing
+
+Smart Stack is licensed under the [Apache License 2.0](LICENSE). Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the project is provided under that license, as described in Section 5 of the license. You must have the right to submit your contribution and must preserve applicable copyright, patent, trademark, and attribution notices.
+
 ## Review and merge policy
 
 Protected branches require passing checks, an approving review, an up-to-date branch, and resolved review conversations. Maintainers may request smaller pull requests when a change combines unrelated responsibilities.

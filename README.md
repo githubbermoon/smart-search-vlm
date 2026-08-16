@@ -3,6 +3,7 @@
 [![Python CI](https://github.com/githubbermoon/smart-search-vlm/actions/workflows/python-ci.yml/badge.svg)](https://github.com/githubbermoon/smart-search-vlm/actions/workflows/python-ci.yml)
 [![macOS App CI](https://github.com/githubbermoon/smart-search-vlm/actions/workflows/macos-app-ci.yml/badge.svg)](https://github.com/githubbermoon/smart-search-vlm/actions/workflows/macos-app-ci.yml)
 [![Security](https://github.com/githubbermoon/smart-search-vlm/actions/workflows/security.yml/badge.svg)](https://github.com/githubbermoon/smart-search-vlm/actions/workflows/security.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 Privacy-first, local multimodal search for personal images on macOS, with document ingestion developed as an isolated extension.
 
@@ -378,4 +379,6 @@ See `RUNBOOK.md` for checks, failure handling, reprocessing flow, and maintenanc
 
 Development is coordinated through separate image and document integration branches while `master` remains the stable product branch. See the contributing guide for branch selection, required tests, privacy rules, and review standards.
 
-An OSI-approved license has not yet been selected. Until a license is added, the repository is publicly viewable but should not be described as open source or redistributed as an open-source project.
+## License
+
+Smart Stack is open-source software licensed under the [Apache License 2.0](LICENSE). Contributions submitted for inclusion in the project are provided under the same license unless explicitly stated otherwise.
