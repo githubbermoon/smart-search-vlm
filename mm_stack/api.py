@@ -131,23 +131,57 @@ def photos_list(
     offset: int = 0,
     include_missing: bool = True,
     check_paths: bool = False,
+    content_type: str = "image",
     cfg: StackConfig | None = None,
 ) -> dict[str, Any]:
     from .db import connect_sqlite, ensure_schema
 
     conn = connect_sqlite(cfg or StackConfig())
     ensure_schema(conn)
+    requested_type = (content_type or "image").strip().lower()
+    if requested_type not in {"all", "image", "document"}:
+        raise ValueError("content_type must be one of: all, image, document")
+    type_where = "" if requested_type == "all" else "WHERE content_type = ?"
+    type_params: list[Any] = [] if requested_type == "all" else [requested_type]
     try:
-        total_row = conn.execute("SELECT COUNT(*) AS c FROM images").fetchone()
+        total_row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS c FROM (
+                SELECT CASE
+                    WHEN content_type = 'document' THEN 'document:' || file_path
+                    ELSE id
+                END AS logical_id
+                FROM images
+                {type_where}
+                GROUP BY logical_id
+            )
+            """,
+            type_params,
+        ).fetchone()
         total_indexed = int(total_row["c"] if total_row is not None else 0)
         rows = conn.execute(
-            """
-            SELECT id, file_path, caption, summary, tags, created_at, updated_at, is_stale
-            FROM images
+            f"""
+            WITH logical_items AS (
+                SELECT id, file_path, caption, summary, tags, created_at, updated_at, is_stale,
+                       content_type, section_label, chunk_index,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY CASE
+                               WHEN content_type = 'document' THEN 'document:' || file_path
+                               ELSE id
+                           END
+                           ORDER BY chunk_index ASC, datetime(updated_at) DESC
+                       ) AS logical_rank
+                FROM images
+                {type_where}
+            )
+            SELECT id, file_path, caption, summary, tags, created_at, updated_at, is_stale,
+                   content_type, section_label, chunk_index
+            FROM logical_items
+            WHERE logical_rank = 1
             ORDER BY datetime(created_at) DESC, created_at DESC
             LIMIT ? OFFSET ?
             """,
-            (max(1, int(limit)), max(0, int(offset))),
+            (*type_params, max(1, int(limit)), max(0, int(offset))),
         ).fetchall()
 
         effective_check_paths = bool(check_paths or (not include_missing))
@@ -181,6 +215,8 @@ def photos_list(
                     "updated_at": str(row["updated_at"] or ""),
                     "is_stale": bool(row["is_stale"]),
                     "exists_on_disk": exists_on_disk,
+                    "content_type": str(row["content_type"] or "image"),
+                    "section_label": str(row["section_label"] or ""),
                 }
             )
     finally:
@@ -193,6 +229,7 @@ def photos_list(
         "offset": max(0, int(offset)),
         "include_missing": bool(include_missing),
         "path_checks_performed": bool(effective_check_paths),
+        "content_type": requested_type,
         "items": items,
     }
 

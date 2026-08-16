@@ -5,10 +5,12 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "einops",
     "lancedb",
     "mlx-vlm",
     "open-clip-torch",
     "pillow",
+    "pypdf>=5.0",
     "pyobjc-framework-Vision",
     "rapidfuzz",
     "sentence-transformers",

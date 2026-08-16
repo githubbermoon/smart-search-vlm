@@ -44,12 +44,13 @@ def _normalize_results(mm_payload: dict, min_score: float) -> list[dict]:
         path = str(item.get("file_path", ""))
         rows.append(
             {
-                "source": "image",
+                "source": str(item.get("content_type", "image") or "image"),
                 "filename": Path(path).name or "unknown",
                 "caption": str(item.get("caption", "") or ""),
                 "tags": item.get("tags", []) if isinstance(item.get("tags", []), list) else [],
                 "score": f"{score:.4f}",
                 "obsidian_path": path,
+                "section_label": str(item.get("section_label", "") or ""),
             }
         )
     return rows

@@ -179,6 +179,8 @@ class MultimodalChat:
             "ocr_structured": str(row["ocr_structured"]),
             "score": 1.25,
             "source": "attached",
+            "content_type": str(row["content_type"] or "image"),
+            "section_label": str(row["section_label"] or ""),
         }
 
     def _resize_image_if_needed(self, image_path: str) -> str:
@@ -279,7 +281,7 @@ class MultimodalChat:
         """
         Computes grounding score based on token overlap.
         """
-        if "Not found in retrieved images" in answer:
+        if "Not found in retrieved content" in answer or "Not found in retrieved images" in answer:
             return 0.0
 
         answer_tokens = set(re.split(r"\W+", answer.lower())) - {"a", "an", "the", "is", "of", "in"}
@@ -353,7 +355,7 @@ class MultimodalChat:
         if hits:
             hits.sort(key=lambda x: (x[0], x[1]), reverse=True)
             top = [src for _, _, src in hits[: min(2, len(hits))]]
-            prefix = f"Found retrieved images related to '{query}':"
+            prefix = f"Found retrieved content related to '{query}':"
         else:
             # Semantic fallback: if retrieval similarity is strong but lexical overlap is weak,
             # return the closest grounded items instead of a false "Not found".
@@ -361,7 +363,7 @@ class MultimodalChat:
             if not ordered or float(ordered[0].get("score", 0.0) or 0.0) < 0.72:
                 return None
             top = ordered[: min(2, len(ordered))]
-            prefix = f"Closest retrieved images for '{query}':"
+            prefix = f"Closest retrieved content for '{query}':"
 
         lines = []
         for src in top:
@@ -416,7 +418,7 @@ class MultimodalChat:
             best_overlap = hits[0][0]
             support_ratio = best_overlap / max(1, len(terms))
             return (
-                f"Found retrieved images related to '{query}':\n" + "\n".join(lines),
+                f"Found retrieved content related to '{query}':\n" + "\n".join(lines),
                 "explicit",
                 support_ratio,
             )
@@ -448,7 +450,7 @@ class MultimodalChat:
                 "Closest semantic neighbors:"
             )
         else:
-            prefix = f"Closest retrieved images for '{query}':"
+            prefix = f"Closest retrieved content for '{query}':"
 
         lines = []
         for src in top:
@@ -609,7 +611,7 @@ class MultimodalChat:
         abstain_recommended = bool(getattr(search_resp, "abstain_recommended", False))
         if abstain_recommended and not focus_mode and not compare_mode:
             abstain_answer = (
-                f"I could not find reliable evidence for '{query}' in indexed metadata. "
+                f"I could not find reliable evidence for '{query}' in indexed content. "
                 "Try adding concrete attributes, objects, or context."
             )
             abstain_sources: list[dict[str, Any]] = []
@@ -622,6 +624,8 @@ class MultimodalChat:
                         "summary": str(row.get("summary", "")),
                         "image_id": str(row.get("image_id", "")),
                         "tags": row.get("tags", []) if isinstance(row.get("tags", []), list) else [],
+                        "content_type": str(row.get("content_type", "image") or "image"),
+                        "section_label": str(row.get("section_label", "") or ""),
                     }
                 )
             self.session.add_turn(query, abstain_answer, [s["image_id"] for s in abstain_sources if s["image_id"]])
@@ -681,7 +685,7 @@ class MultimodalChat:
         if not filtered:
             yield {
                 "type": "complete",
-                "answer": "Not found in retrieved images (low similarity).",
+                "answer": "Not found in retrieved content (low similarity).",
                 "sources": [],
                 "confidence": "Low",
                 "grounded_score": 0.0,
@@ -703,11 +707,13 @@ class MultimodalChat:
             if not Path(raw_path).exists():
                 logger.warning("Skipping stale indexed file missing on disk: %s", raw_path)
                 continue
-            r_path = self._resize_image_if_needed(raw_path)
-            if not r_path or not Path(r_path).exists():
-                logger.warning("Skipping file that could not be prepared for VLM: %s", raw_path)
-                continue
-            image_paths.append(r_path)
+            content_type = str(r.get("content_type", "image") or "image")
+            if content_type == "image":
+                r_path = self._resize_image_if_needed(raw_path)
+                if not r_path or not Path(r_path).exists():
+                    logger.warning("Skipping image that could not be prepared for VLM: %s", raw_path)
+                    continue
+                image_paths.append(r_path)
             
             # Compression Layer
             ocr_text, kept_blocks = self._filter_ocr_advanced(r.get("ocr_structured", "[]"), matching_query)
@@ -716,7 +722,9 @@ class MultimodalChat:
                 all_context_blocks.append((r["image_id"], b))
 
             meta_text = (
-                f"Image: {r['file_path'].split('/')[-1]}\n"
+                f"Source: {r['file_path'].split('/')[-1]}\n"
+                f"Type: {content_type}\n"
+                f"Section: {r.get('section_label', '')}\n"
                 f"Caption: {r['caption']}\n"
                 f"Summary: {r.get('summary', '')}\n"
                 f"OCR: {ocr_text}\n"
@@ -731,14 +739,16 @@ class MultimodalChat:
                 "caption": r["caption"],
                 "summary": r.get("summary", ""),
                 "image_id": r["image_id"],
-                "tags": r["tags"]
+                "tags": r["tags"],
+                "content_type": content_type,
+                "section_label": str(r.get("section_label", "") or ""),
             })
 
-        if not image_paths:
+        if not context_parts:
             yield {
                 "type": "complete",
                 "answer": (
-                    "Retrieved image files are missing from disk. "
+                    "Retrieved files are missing from disk. "
                     "Run rescan/re-ingest to refresh the index paths."
                 ),
                 "sources": [],
@@ -774,8 +784,8 @@ class MultimodalChat:
                 )
             else:
                 system_prompt = (
-                    "You are a strict grounded assistant. Answer ONLY using the provided Context.\n"
-                    "If the answer is not in the context, say 'Not found in retrieved images'.\n"
+                    "You are a strict grounded assistant. Answer ONLY using the provided Context and any supplied images.\n"
+                    "If the answer is not in the context, say 'Not found in retrieved content'.\n"
                 )
             attached_line = ""
             if attached_source:
@@ -807,7 +817,7 @@ class MultimodalChat:
             output = generate(
                 model, 
                 processor, 
-                image=loaded_images, 
+                image=loaded_images or None,
                 prompt=formatted_prompt, 
                 max_tokens=256, 
                 verbose=False
@@ -824,7 +834,7 @@ class MultimodalChat:
             if focus_mode:
                 # In focus mode, assistant can answer from the attached image pixels,
                 # so metadata-token overlap should not force unrelated lexical fallback.
-                if "Not found in retrieved images" not in full_answer:
+                if "Not found in retrieved content" not in full_answer and "Not found in retrieved images" not in full_answer:
                     grounded_score = max(grounded_score, 0.75)
                     confidence = "High" if grounded_score >= 0.7 else "Medium"
                 elif grounded_score < self.min_grounding_score:
@@ -833,7 +843,7 @@ class MultimodalChat:
             else:
                 # If model says "Not found" despite clear lexical match in retrieved sources,
                 # override with a deterministic grounded fallback.
-                if "Not found in retrieved images" in full_answer:
+                if "Not found in retrieved content" in full_answer or "Not found in retrieved images" in full_answer:
                     if compare_mode:
                         compare_fallback = self._build_compare_neighbors_answer(query, source_metas)
                         if compare_fallback:
@@ -890,7 +900,7 @@ class MultimodalChat:
                                 confidence = "Low" if max_source_score < 0.8 else "Medium"
                                 grounded_score = max(grounded_score, min(0.40, max_source_score * 0.5))
                         else:
-                            full_answer = "Not found in retrieved images."
+                            full_answer = "Not found in retrieved content."
                             confidence = "Low"
                             grounded_score = 0.0
 

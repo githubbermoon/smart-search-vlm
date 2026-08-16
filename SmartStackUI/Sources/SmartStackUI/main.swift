@@ -64,6 +64,7 @@ enum TimelineGranularity: String, CaseIterable, Identifiable {
 enum SourceFilter: String, CaseIterable, Identifiable {
     case all = "All"
     case image = "Images"
+    case document = "Documents"
 
     var id: String { rawValue }
 }
@@ -94,6 +95,7 @@ struct SearchResultItem: Identifiable, Decodable {
     let filePath: String
     let caption: String
     let score: Double
+    let source: String
 }
 
 // New Multimodal Response Structs
@@ -109,6 +111,9 @@ struct MultimodalResultItem: Decodable {
     let tags: [String]
     let score: Double
     let source: String?
+    let content_type: String?
+    let section_label: String?
+    let chunk_index: Int?
 }
 
 struct ChatResponse: Decodable {
@@ -213,6 +218,7 @@ struct PhotosListResponse: Decodable {
     let offset: Int
     let include_missing: Bool
     let path_checks_performed: Bool
+    let content_type: String?
     let items: [IndexedPhotoItem]
 }
 
@@ -226,6 +232,8 @@ struct IndexedPhotoItem: Decodable {
     let updated_at: String
     let is_stale: Bool
     let exists_on_disk: Bool
+    let content_type: String
+    let section_label: String
 }
 
 struct ClusterListResponse: Decodable {
@@ -295,7 +303,6 @@ final class SmartStackViewModel: ObservableObject {
     @Published var isBusy: Bool = false
     @Published var results: [SearchResult] = []
     @Published var logs: String = "Ready."
-    @Published var showSettings: Bool = false
     @Published var watchedFolders: [WatchedFolder] = []
     @Published var exclusions: [ExclusionPattern] = []
     @Published var showContextLens: Bool = false
@@ -337,6 +344,22 @@ final class SmartStackViewModel: ObservableObject {
         attachedChatImage != nil
     }
 
+    var hasSearchHistory: Bool {
+        !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !results.isEmpty
+            || hasVisualQueryImage
+            || !lastSearchQuery.isEmpty
+    }
+
+    var hasChatHistory: Bool {
+        !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !chatTurns.isEmpty
+            || !chatAnswer.isEmpty
+            || !chatSources.isEmpty
+            || !chatConfidence.isEmpty
+            || hasAttachedChatImage
+    }
+
     var attachedChatImageFilename: String {
         guard let attachedChatImage else { return "" }
         return attachedChatImage.filename
@@ -350,6 +373,8 @@ final class SmartStackViewModel: ObservableObject {
                 sourceOK = true
             case .image:
                 sourceOK = row.source == "image"
+            case .document:
+                sourceOK = row.source == "document"
             }
             return sourceOK && row.numericScore >= minScore
         }
@@ -362,7 +387,8 @@ final class SmartStackViewModel: ObservableObject {
                 id: res.id, 
                 filePath: res.obsidian_path, 
                 caption: res.caption, 
-                score: res.numericScore
+                score: res.numericScore,
+                source: res.source
             )
         }
     }
@@ -429,6 +455,14 @@ final class SmartStackViewModel: ObservableObject {
             appendLog("Cleared visual query image.")
         }
         visualQueryImagePath = ""
+    }
+
+    func clearSearchHistory() {
+        query = ""
+        results = []
+        visualQueryImagePath = ""
+        lastSearchQuery = ""
+        appendLog("Cleared search history and results.")
     }
 
     func pickVisualQueryImage() {
@@ -599,11 +633,33 @@ final class SmartStackViewModel: ObservableObject {
     }
 
     func clearChatConversation() {
+        query = ""
         chatTurns = []
         chatAnswer = ""
         chatSources = []
         chatConfidence = ""
-        appendLog("Cleared chat conversation.")
+        attachedChatImage = nil
+
+        let cacheDir = URL(fileURLWithPath: stackRoot).appendingPathComponent(".cache/chat")
+        let fileManager = FileManager.default
+        var removedFiles = 0
+        if let cachedFiles = try? fileManager.contentsOfDirectory(
+            at: cacheDir,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) {
+            for fileURL in cachedFiles
+            where fileURL.lastPathComponent.hasPrefix("history_") && fileURL.pathExtension == "json" {
+                do {
+                    try fileManager.removeItem(at: fileURL)
+                    removedFiles += 1
+                } catch {
+                    appendLog("Could not remove cached chat history: \(error.localizedDescription)")
+                }
+            }
+        }
+
+        appendLog("Cleared chat conversation and \(removedFiles) cached history file(s).")
     }
 
     func runChat() {
@@ -677,7 +733,7 @@ final class SmartStackViewModel: ObservableObject {
                     let url = URL(fileURLWithPath: item.file_path)
                     return SearchResult(
                         image_id: item.image_id,
-                        source: "image", 
+                        source: item.content_type ?? "image",
                         filename: url.lastPathComponent,
                         caption: item.caption,
                         tags: item.tags,
@@ -916,9 +972,35 @@ final class SmartStackViewModel: ObservableObject {
         }
     }
 
+    func runAllFiles(limit: Int = 180) {
+        runIndexedLibrary(
+            contentType: "all",
+            selectedFilter: .all,
+            title: "All Files",
+            noun: "files",
+            limit: limit
+        )
+    }
+
     func runAllPhotos(limit: Int = 180) {
+        runIndexedLibrary(
+            contentType: "image",
+            selectedFilter: .image,
+            title: "Images",
+            noun: "images",
+            limit: limit
+        )
+    }
+
+    private func runIndexedLibrary(
+        contentType: String,
+        selectedFilter: SourceFilter,
+        title: String,
+        noun: String,
+        limit: Int
+    ) {
         isChatMode = false
-        sourceFilter = .image
+        sourceFilter = selectedFilter
         minScore = 0.0
         query = ""
         visualQueryImagePath = ""
@@ -929,16 +1011,18 @@ final class SmartStackViewModel: ObservableObject {
             "photos-list",
             "--limit",
             "\(max(1, limit))",
+            "--content-type",
+            contentType,
         ]
 
-        runCommand(args: args, title: "All Photos") { output, stderr, code in
+        runCommand(args: args, title: title) { output, stderr, code in
             guard code == 0 else {
                 let err = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-                self.appendLog("All Photos failed code \(code). \(err)")
+                self.appendLog("\(title) failed code \(code). \(err)")
                 return
             }
             guard !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                self.appendLog("All Photos output is empty.")
+                self.appendLog("\(title) output is empty.")
                 return
             }
             do {
@@ -947,7 +1031,7 @@ final class SmartStackViewModel: ObservableObject {
                     let url = URL(fileURLWithPath: item.file_path)
                     return SearchResult(
                         image_id: item.image_id,
-                        source: "image",
+                        source: item.content_type,
                         filename: url.lastPathComponent,
                         caption: item.caption.isEmpty ? item.summary : item.caption,
                         tags: item.tags,
@@ -956,21 +1040,21 @@ final class SmartStackViewModel: ObservableObject {
                     )
                 }
                 self.appendLog(
-                    "All Photos debug: results=\(self.results.count), filtered=\(self.filteredResults.count), "
+                    "\(title) debug: results=\(self.results.count), filtered=\(self.filteredResults.count), "
                     + "isChatMode=\(self.isChatMode), minScore=\(String(format: "%.2f", self.minScore)), filter=\(self.sourceFilter.rawValue)"
                 )
                 if resp.path_checks_performed {
                     let missingCount = resp.items.filter { !$0.exists_on_disk }.count
                     self.appendLog(
-                        "All Photos: loaded \(resp.returned)/\(resp.total_indexed) indexed photos."
+                        "\(title): loaded \(resp.returned)/\(resp.total_indexed) indexed \(noun)."
                         + (missingCount > 0 ? " Missing on disk: \(missingCount)." : "")
                     )
                 } else {
-                    self.appendLog("All Photos: loaded \(resp.returned)/\(resp.total_indexed) indexed photos (fast mode).")
+                    self.appendLog("\(title): loaded \(resp.returned)/\(resp.total_indexed) indexed \(noun) (fast mode).")
                 }
             } catch {
-                self.appendLog("All Photos parse error: \(error.localizedDescription)")
-                self.appendLog("All Photos output preview: \(self.truncatedLogLine(output, maxChars: 700))")
+                self.appendLog("\(title) parse error: \(error.localizedDescription)")
+                self.appendLog("\(title) output preview: \(self.truncatedLogLine(output, maxChars: 700))")
             }
         }
     }
@@ -1140,7 +1224,7 @@ final class SmartStackViewModel: ObservableObject {
                     let url = URL(fileURLWithPath: item.file_path)
                     return SearchResult(
                         image_id: item.image_id,
-                        source: "image",
+                        source: item.content_type ?? "image",
                         filename: url.lastPathComponent,
                         caption: item.caption,
                         tags: item.tags,
@@ -1290,12 +1374,12 @@ final class SmartStackViewModel: ObservableObject {
                     self.isBusy = false
                     // Log output (combined) for debugging visibility
                     if !combined.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        if title == "All Photos" {
+                        if title == "All Photos" || title == "All Files" || title == "Images" {
                             let trimmedErr = errText.trimmingCharacters(in: .whitespacesAndNewlines)
                             if !trimmedErr.isEmpty {
                                 self.appendLog(trimmedErr)
                             }
-                            self.appendLog("[All Photos] Raw JSON output suppressed (\(outText.utf8.count) bytes).")
+                            self.appendLog("[\(title)] Raw JSON output suppressed (\(outText.utf8.count) bytes).")
                         } else {
                             self.appendLog(self.truncatedLogLine(combined, maxChars: 10000))
                         }
@@ -1454,7 +1538,24 @@ struct ExclusionPattern: Identifiable, Decodable {
 struct SettingsSheet: View {
     @ObservedObject var vm: SmartStackViewModel
     @State private var newExclusion: String = ""
-    @Environment(\.dismiss) private var dismiss
+
+    private let actionColumns = [
+        GridItem(.flexible(), spacing: 10),
+        GridItem(.flexible(), spacing: 10),
+    ]
+
+    private func settingsAction(
+        _ title: String,
+        systemImage: String,
+        role: ButtonRole? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(role: role, action: action) {
+            Label(title, systemImage: systemImage)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.bordered)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1463,12 +1564,6 @@ struct SettingsSheet: View {
                 Text("Settings")
                     .font(.system(size: 18, weight: .bold, design: .rounded))
                 Spacer()
-                Button { dismiss() } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.title2)
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
             }
             .padding(20)
 
@@ -1476,6 +1571,93 @@ struct SettingsSheet: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
+                    GlobalShortcutSettingsSection()
+
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        Label("Search", systemImage: "magnifyingglass")
+                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+
+                        Picker("Mode", selection: $vm.searchMode) {
+                            ForEach(SearchMode.allCases) { mode in
+                                Text(mode.rawValue).tag(mode)
+                            }
+                        }
+
+                        Picker("File Type", selection: $vm.sourceFilter) {
+                            ForEach(SourceFilter.allCases) { filter in
+                                Text(filter.rawValue).tag(filter)
+                            }
+                        }
+
+                        Stepper("Number of results (Top K): \(vm.topK)", value: $vm.topK, in: 1...50)
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Minimum score: \(String(format: "%.2f", vm.minScore))")
+                            Slider(value: $vm.minScore, in: 0...1)
+                        }
+                    }
+
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        Label("Browse and Visual Search", systemImage: "photo.on.rectangle.angled")
+                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+
+                        LazyVGrid(columns: actionColumns, spacing: 10) {
+                            settingsAction("Pick Visual Query", systemImage: "photo.badge.plus") {
+                                vm.pickVisualQueryImage()
+                            }
+                            settingsAction("Paste Visual Query", systemImage: "doc.on.clipboard") {
+                                vm.pasteClipboardImageForSearch()
+                            }
+                            settingsAction("Paste and Ingest", systemImage: "square.and.arrow.down") {
+                                vm.pasteClipboardImageAndIngest()
+                            }
+                            settingsAction("All Indexed Files", systemImage: "doc.on.doc.fill") {
+                                vm.runAllFiles()
+                            }
+                            settingsAction("All Indexed Images", systemImage: "photo.stack") {
+                                vm.runAllPhotos()
+                            }
+                            settingsAction("Photo Clusters", systemImage: "square.grid.3x3.fill") {
+                                vm.openClusters()
+                            }
+                            settingsAction("Auto Cluster Photos", systemImage: "sparkles.rectangle.stack") {
+                                vm.runAutoCluster()
+                            }
+                            if vm.hasVisualQueryImage {
+                                settingsAction("Clear Visual Query", systemImage: "xmark.circle") {
+                                    vm.clearVisualQueryImage()
+                                }
+                            }
+                            if vm.hasAttachedChatImage {
+                                settingsAction("Clear Chat Image", systemImage: "xmark.circle") {
+                                    vm.clearAttachedChatImage()
+                                }
+                            }
+                        }
+                    }
+
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        Label("History", systemImage: "clock.arrow.circlepath")
+                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+
+                        LazyVGrid(columns: actionColumns, spacing: 10) {
+                            settingsAction("Clear Search History", systemImage: "trash") {
+                                vm.clearSearchHistory()
+                            }
+                            settingsAction("Clear Chat Conversation", systemImage: "bubble.left.and.bubble.right") {
+                                vm.clearChatConversation()
+                            }
+                        }
+                    }
+
+                    Divider()
+
                     // Watched Folders
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
@@ -1584,27 +1766,40 @@ struct SettingsSheet: View {
 
                     Divider()
 
-                    // Actions
-                    VStack(spacing: 10) {
-                        Button {
-                            vm.runRescanAll()
-                        } label: {
-                            HStack {
-                                Image(systemName: "arrow.clockwise")
-                                Text("Rescan Now")
+                    VStack(alignment: .leading, spacing: 12) {
+                        Label("Ingestion and Maintenance", systemImage: "externaldrive.badge.gearshape")
+                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+
+                        LazyVGrid(columns: actionColumns, spacing: 10) {
+                            settingsAction("Ingest File or Folder", systemImage: "folder.badge.plus") {
+                                vm.runIngestPath()
                             }
-                            .frame(maxWidth: .infinity)
-                            .padding(10)
-                            .background(.blue.opacity(0.2), in: RoundedRectangle(cornerRadius: 10))
+                            settingsAction("Ingest Inbox", systemImage: "tray.and.arrow.down") {
+                                vm.runInboxIngest()
+                            }
+                            settingsAction("Rescan Changed", systemImage: "arrow.clockwise") {
+                                vm.runRescan()
+                            }
+                            settingsAction("Rescan Everything", systemImage: "arrow.triangle.2.circlepath") {
+                                vm.runRescanAll()
+                            }
+                            settingsAction("Safe Reprocess", systemImage: "checkmark.shield") {
+                                vm.runSafeReprocess()
+                            }
+                            settingsAction(
+                                "Emergency Kill Switch",
+                                systemImage: "power",
+                                role: .destructive
+                            ) {
+                                vm.runEmergencyMemoryKillSwitch()
+                            }
                         }
-                        .buttonStyle(.plain)
-                        .disabled(vm.isBusy)
                     }
                 }
                 .padding(20)
             }
         }
-        .frame(width: 450, height: 550)
+        .frame(width: 540, height: 680)
         .background(.regularMaterial)
         .onAppear {
             vm.loadWatchedFolders()
@@ -2311,7 +2506,7 @@ struct ResultCard: View {
     }
 
     private var badgeColor: Color {
-        result.source == "note" ? .orange : .mint
+        result.source == "document" ? .indigo : (result.source == "note" ? .orange : .mint)
     }
 
     var body: some View {
@@ -2347,12 +2542,12 @@ struct ResultCard: View {
             } else {
                  ZStack(alignment: .topLeading) {
                      Rectangle()
-                        .fill(Color.yellow.opacity(0.1))
+                        .fill(result.source == "document" ? Color.indigo.opacity(0.12) : Color.yellow.opacity(0.1))
                         .aspectRatio(1.2, contentMode: .fit)
                      
-                     Image(systemName: "note.text")
+                     Image(systemName: result.source == "document" ? "doc.text.fill" : "note.text")
                         .font(.title2)
-                        .foregroundStyle(.orange.opacity(0.8))
+                        .foregroundStyle(result.source == "document" ? Color.indigo.opacity(0.9) : Color.orange.opacity(0.8))
                         .padding(12)
                         
                     Text(result.filename)
@@ -2522,9 +2717,6 @@ struct ContentView: View {
                 logsSection
                     .padding(20)
             }
-        }
-        .sheet(isPresented: $vm.showSettings) {
-            SettingsSheet(vm: vm)
         }
         .sheet(isPresented: $vm.showContextLens) {
             ContextLensSheet(vm: vm)
@@ -2733,8 +2925,20 @@ struct ContentView: View {
             }
 
             labeledIconButton(
-                title: "All Photos",
-                help: "All Indexed Photos",
+                title: "All Files",
+                help: "Browse all indexed images and documents",
+                action: { vm.runAllFiles() }
+            ) {
+                Image(systemName: "doc.on.doc.fill")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(10)
+                    .background(.ultraThinMaterial, in: Circle())
+            }
+
+            labeledIconButton(
+                title: "Images",
+                help: "Browse indexed images",
                 action: { vm.runAllPhotos() }
             ) {
                 Image(systemName: "photo.stack")
@@ -2772,74 +2976,6 @@ struct ContentView: View {
                 }
             )
 
-            labeledIconMenu(
-                title: "Settings",
-                help: "Search and ingest settings",
-                content: {
-                // Mode
-                Picker("Mode", selection: $vm.searchMode) {
-                    ForEach(SearchMode.allCases) { mode in
-                        Text(mode.rawValue).tag(mode)
-                    }
-                }
-
-                Divider()
-
-                // Filters
-                Picker("Filter", selection: $vm.sourceFilter) {
-                    ForEach(SourceFilter.allCases) { f in
-                        Text(f.rawValue).tag(f)
-                    }
-                }
-                
-                Divider()
-                
-                // Sliders
-                Text("Top K: \(vm.topK)")
-                Stepper("Top K", value: $vm.topK, in: 1...50)
-                
-                Text("Min Score: \(String(format: "%.2f", vm.minScore))")
-                Slider(value: $vm.minScore, in: 0...1)
-
-                Divider()
-
-                // Actions
-                Button("Pick Visual Query Image") { vm.pickVisualQueryImage() }
-                Button("Paste Image as Visual Query") { vm.pasteClipboardImageForSearch() }
-                Button("Paste Image and Ingest") { vm.pasteClipboardImageAndIngest() }
-                Button("All Indexed Photos") { vm.runAllPhotos() }
-                Button("Open Photo Clusters") { vm.openClusters() }
-                Button("Auto Cluster Photos") { vm.runAutoCluster() }
-                if vm.hasVisualQueryImage {
-                    Button("Clear Visual Query Image") { vm.clearVisualQueryImage() }
-                }
-                if vm.hasAttachedChatImage {
-                    Button("Clear Attached Chat Image") { vm.clearAttachedChatImage() }
-                }
-                Button("Clear Chat Conversation") { vm.clearChatConversation() }
-
-                Divider()
-
-                Button("Ingest File/Folder") { vm.runIngestPath() }
-                Button("Ingest Inbox") { vm.runInboxIngest() }
-                Button("Rescan Changed") { vm.runRescan() }
-                Button("Safe Reprocess") { vm.runSafeReprocess() }
-                Button(role: .destructive) { vm.runEmergencyMemoryKillSwitch() } label: { Text("Emergency Kill Switch") }
-
-                Divider()
-
-                Button("Settings...") { vm.showSettings = true }
-                
-                },
-                label: {
-                    Image(systemName: "slider.horizontal.3")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .padding(10)
-                        .background(.ultraThinMaterial, in: Circle())
-                }
-            )
-            
             labeledIconButton(
                 title: "Expand",
                 help: "Toggle Expanded Controls",
@@ -2920,90 +3056,124 @@ struct ContentView: View {
     }
 
     private var resultsSection: some View {
-        ScrollView {
-            MasonryGrid(items: vm.filteredResults, columns: 3) { item in
-                ResultCard(
-                    result: item,
-                    openAction: { vm.open(item) },
-                    contextAction: item.image_id == nil ? nil : { vm.runContextLens(for: item) },
-                    attachChatAction: { vm.attachImageForChat(item) }
-                )
-                .padding(.bottom, 12)
+        VStack(spacing: 10) {
+            HStack {
+                Text("Search Results")
+                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    vm.clearSearchHistory()
+                } label: {
+                    Label("Clear Search", systemImage: "trash")
+                }
+                .buttonStyle(.bordered)
+                .disabled(!vm.hasSearchHistory || vm.isBusy)
+                .help("Clear the current search, visual query, and results")
             }
-            .padding(.top, 10)
-            .animation(.spring(response: 0.4, dampingFraction: 0.8), value: vm.filteredResults.count)
+
+            ScrollView {
+                MasonryGrid(items: vm.filteredResults, columns: 3) { item in
+                    ResultCard(
+                        result: item,
+                        openAction: { vm.open(item) },
+                        contextAction: item.image_id == nil ? nil : { vm.runContextLens(for: item) },
+                        attachChatAction: { vm.attachImageForChat(item) }
+                    )
+                    .padding(.bottom, 12)
+                }
+                .padding(.top, 10)
+                .animation(.spring(response: 0.4, dampingFraction: 0.8), value: vm.filteredResults.count)
+            }
         }
     }
 
     private var chatSection: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                if !vm.chatTurns.isEmpty {
-                    ForEach(vm.chatTurns) { turn in
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Image(systemName: turn.role == .assistant ? "sparkles" : "person.fill")
-                                    .foregroundStyle(turn.role == .assistant ? .yellow : .blue)
-                                Text(turn.role == .assistant ? "Assistant" : "You")
-                                    .font(.headline)
-                                    .foregroundStyle(.secondary)
-                                Spacer()
-                                if turn.role == .assistant, let confidence = turn.confidence, !confidence.isEmpty {
-                                    Text(confidence)
-                                        .font(.caption)
-                                        .padding(4)
-                                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 4))
-                                }
-                            }
+        VStack(spacing: 10) {
+            HStack {
+                Text("Chat History")
+                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    vm.clearChatConversation()
+                } label: {
+                    Label("Clear Chat", systemImage: "trash")
+                }
+                .buttonStyle(.bordered)
+                .disabled(!vm.hasChatHistory || vm.isBusy)
+                .help("Clear the conversation, attachment, and temporary chat history")
+            }
 
-                            Text(turn.content)
-                                .font(.system(size: 16, weight: .regular, design: .rounded))
-                                .lineSpacing(4)
-                                .foregroundStyle(.primary)
-                                .textSelection(.enabled)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    if !vm.chatTurns.isEmpty {
+                        ForEach(vm.chatTurns) { turn in
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack {
+                                    Image(systemName: turn.role == .assistant ? "sparkles" : "person.fill")
+                                        .foregroundStyle(turn.role == .assistant ? .yellow : .blue)
+                                    Text(turn.role == .assistant ? "Assistant" : "You")
+                                        .font(.headline)
+                                        .foregroundStyle(.secondary)
+                                    Spacer()
+                                    if turn.role == .assistant, let confidence = turn.confidence, !confidence.isEmpty {
+                                        Text(confidence)
+                                            .font(.caption)
+                                            .padding(4)
+                                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 4))
+                                    }
+                                }
+
+                                Text(turn.content)
+                                    .font(.system(size: 16, weight: .regular, design: .rounded))
+                                    .lineSpacing(4)
+                                    .foregroundStyle(.primary)
+                                    .textSelection(.enabled)
+                            }
+                            .padding(20)
+                            .background(.thinMaterial)
+                            .cornerRadius(16)
+                        }
+
+                        if !vm.chatSources.isEmpty {
+                            Text("Latest Sources")
+                                .font(.headline)
+                                .foregroundStyle(.secondary)
+                                .padding(.leading, 4)
+
+                            MasonryGrid(items: vm.chatSources, columns: 3) { item in
+                                ResultCard(
+                                    result: item,
+                                    openAction: { vm.open(item) },
+                                    contextAction: item.image_id == nil ? nil : { vm.runContextLens(for: item) },
+                                    attachChatAction: { vm.attachImageForChat(item) }
+                                )
+                                .padding(.bottom, 12)
+                            }
+                        }
+                    } else if vm.isBusy {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Rectangle().fill(.white.opacity(0.1)).frame(height: 20).cornerRadius(4)
+                            Rectangle().fill(.white.opacity(0.1)).frame(height: 20).cornerRadius(4)
+                            Rectangle().fill(.white.opacity(0.1)).frame(width: 200, height: 20).cornerRadius(4)
                         }
                         .padding(20)
-                        .background(.thinMaterial)
-                        .cornerRadius(16)
-                    }
-
-                    if !vm.chatSources.isEmpty {
-                        Text("Latest Sources")
-                            .font(.headline)
-                            .foregroundStyle(.secondary)
-                            .padding(.leading, 4)
-
-                        MasonryGrid(items: vm.chatSources, columns: 3) { item in
-                            ResultCard(
-                                result: item,
-                                openAction: { vm.open(item) },
-                                contextAction: item.image_id == nil ? nil : { vm.runContextLens(for: item) },
-                                attachChatAction: { vm.attachImageForChat(item) }
-                            )
-                            .padding(.bottom, 12)
+                    } else {
+                        VStack(spacing: 20) {
+                            Image(systemName: "message.badge.waveform")
+                                .font(.system(size: 48))
+                                .foregroundStyle(.secondary.opacity(0.5))
+                            Text("Start a continuous chat over your retrieved images.")
+                                .font(.title3)
+                                .foregroundStyle(.secondary)
                         }
+                        .frame(maxWidth: .infinity, minHeight: 300)
                     }
-                } else if vm.isBusy {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Rectangle().fill(.white.opacity(0.1)).frame(height: 20).cornerRadius(4)
-                        Rectangle().fill(.white.opacity(0.1)).frame(height: 20).cornerRadius(4)
-                        Rectangle().fill(.white.opacity(0.1)).frame(width: 200, height: 20).cornerRadius(4)
-                    }
-                    .padding(20)
-                } else {
-                    VStack(spacing: 20) {
-                        Image(systemName: "message.badge.waveform")
-                            .font(.system(size: 48))
-                            .foregroundStyle(.secondary.opacity(0.5))
-                        Text("Start a continuous chat over your retrieved images.")
-                            .font(.title3)
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 300)
                 }
+                .padding(.top, 10)
+                .animation(.spring(response: 0.4), value: vm.chatTurns.count)
             }
-            .padding(.top, 10)
-            .animation(.spring(response: 0.4), value: vm.chatTurns.count)
         }
     }
     
@@ -3087,14 +3257,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotKeyHandlerRef: EventHandlerRef?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
+        // Run as a normal foreground application so opening the installed app
+        // reliably creates a Dock presence and brings its windows forward.
+        NSApp.setActivationPolicy(.regular)
 
         // Create Command Palette
         let palette = CommandPaletteWindow()
         let hostingController = NSHostingController(rootView: CommandPaletteView())
         palette.contentViewController = hostingController
         self.commandPalette = palette
-        registerGlobalHotkey()
+        installGlobalHotkeyHandler()
+        registerConfiguredGlobalHotkey()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(globalShortcutDidChange),
+            name: .smartStackGlobalShortcutChanged,
+            object: nil
+        )
+
+        // Normal app launches use the full main window. The compact command
+        // palette is reserved for the explicit Option-Space shortcut.
+        DispatchQueue.main.async { [weak self] in
+            self?.presentMainWindow()
+        }
         
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             if event.keyCode == 53, let palette = self.commandPalette, palette.isVisible {
@@ -3106,6 +3291,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        NotificationCenter.default.removeObserver(self)
         unregisterGlobalHotkey()
     }
 
@@ -3113,7 +3299,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         false
     }
 
-    private func registerGlobalHotkey() {
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        NSLog("Smart Stack reopen requested (had visible windows: \(flag))")
+        presentMainWindow()
+        return true
+    }
+
+    private func installGlobalHotkeyHandler() {
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         let userData = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
 
@@ -3151,15 +3343,43 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             &hotKeyHandlerRef
         )
 
+    }
+
+    @objc private func globalShortcutDidChange() {
+        registerConfiguredGlobalHotkey()
+    }
+
+    private func registerConfiguredGlobalHotkey() {
+        if let ref = hotKeyRef {
+            UnregisterEventHotKey(ref)
+            hotKeyRef = nil
+        }
+
+        let shortcut = GlobalShortcutPreference.current
         let hotKeyID = EventHotKeyID(signature: OSType(0x5353544B), id: 1) // "SSTK"
-        RegisterEventHotKey(
-            UInt32(kVK_Space),
-            UInt32(cmdKey | shiftKey),
+        let registrationStatus = RegisterEventHotKey(
+            shortcut.keyCode,
+            shortcut.carbonModifiers,
             hotKeyID,
             GetApplicationEventTarget(),
             0,
             &hotKeyRef
         )
+        if registrationStatus != noErr {
+            let message = "Could not register \(shortcut.display). It may already be used by macOS or another app."
+            Task { @MainActor in
+                GlobalShortcutRegistrationState.shared.update(registered: false, message: message)
+            }
+            NSLog("Unable to register global shortcut \(shortcut.display) (status: \(registrationStatus))")
+        } else {
+            Task { @MainActor in
+                GlobalShortcutRegistrationState.shared.update(
+                    registered: true,
+                    message: "Active shortcut: \(shortcut.display)"
+                )
+            }
+            NSLog("Registered global shortcut \(shortcut.display)")
+        }
     }
 
     private func unregisterGlobalHotkey() {
@@ -3172,14 +3392,42 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             hotKeyHandlerRef = nil
         }
     }
+
+    private func presentPalette() {
+        guard let palette = commandPalette else { return }
+        palette.presentOverlay()
+        NSApp.activate(ignoringOtherApps: true)
+        NSLog(
+            "Presented Smart Stack palette " +
+            "(visible: \(palette.isVisible), key: \(palette.isKeyWindow), frame: \(NSStringFromRect(palette.frame)))"
+        )
+    }
+
+    private func presentMainWindow() {
+        NSApp.activate(ignoringOtherApps: true)
+
+        let mainWindow = NSApp.windows.first(where: { window in
+            window !== commandPalette && window.canBecomeMain
+        })
+
+        guard let mainWindow else {
+            NSLog("Main Smart Stack window is still being created")
+            return
+        }
+
+        mainWindow.makeKeyAndOrderFront(nil)
+        NSLog(
+            "Presented main Smart Stack window " +
+            "(visible: \(mainWindow.isVisible), key: \(mainWindow.isKeyWindow))"
+        )
+    }
     
     @objc func togglePalette() {
         guard let palette = commandPalette else { return }
         if palette.isVisible {
             palette.dismissOverlay()
         } else {
-            palette.presentOverlay()
-            NSApp.activate(ignoringOtherApps: true)
+            presentPalette()
         }
     }
 }
@@ -3219,6 +3467,10 @@ struct SmartStackUIApp: App {
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
 
+        Settings {
+            SettingsSheet(vm: vm)
+        }
+
         MenuBarExtra("Smart Stack", systemImage: "sparkles.rectangle.stack") {
             Button("Open Console") {
                 openWindow(id: "main")
@@ -3248,7 +3500,10 @@ struct SmartStackUIApp: App {
             Button("Photo Clusters") {
                 vm.openClusters()
             }
-            Button("All Indexed Photos") {
+            Button("All Indexed Files") {
+                vm.runAllFiles()
+            }
+            Button("All Indexed Images") {
                 vm.runAllPhotos()
             }
             Button("Auto Cluster Photos") {

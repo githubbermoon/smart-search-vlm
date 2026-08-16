@@ -187,7 +187,9 @@ class StackConfig:
     supported_exts: tuple[str, ...] = (
         ".png", ".jpg", ".jpeg", ".webp", ".heic", ".heif", ".bmp", ".tiff",
         ".mp4", ".mov", ".mkv", ".webm", ".avi",
-        ".mp3", ".wav", ".m4a", ".aac"
+        ".mp3", ".wav", ".m4a", ".aac",
+        ".pdf", ".txt", ".md", ".markdown", ".csv", ".tsv", ".json",
+        ".html", ".htm", ".docx", ".pptx", ".xlsx",
     )
 
 
@@ -201,6 +203,11 @@ VIDEO_EXTENSIONS: tuple[str, ...] = (
 
 AUDIO_EXTENSIONS: tuple[str, ...] = (
     ".mp3", ".wav", ".m4a", ".aac",
+)
+
+DOCUMENT_EXTENSIONS: tuple[str, ...] = (
+    ".pdf", ".txt", ".md", ".markdown", ".csv", ".tsv", ".json",
+    ".html", ".htm", ".docx", ".pptx", ".xlsx",
 )
 
 OCR_INTENT_KEYWORDS: tuple[str, ...] = (

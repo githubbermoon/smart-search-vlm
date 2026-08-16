@@ -179,6 +179,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Stat each path on disk to set exists_on_disk (slower on large/remote folders)",
     )
+    photos_list_cmd.add_argument(
+        "--content-type",
+        default="image",
+        choices=["all", "image", "document"],
+        help="Choose images, documents, or all indexed files",
+    )
 
     sub.add_parser("reembed-all", help="Re-embed stale entries")
 
@@ -422,6 +428,7 @@ def main() -> None:
             offset=max(0, int(args.offset)),
             include_missing=not bool(args.exclude_missing),
             check_paths=bool(args.check_exists),
+            content_type=args.content_type,
             cfg=cfg,
         )
     elif args.cmd == "reembed-all":

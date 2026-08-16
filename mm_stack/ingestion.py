@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import logging
 import os
 import re
@@ -11,12 +12,14 @@ from pathlib import Path
 from typing import Any
 
 from .clip_embedder import OpenCLIPEmbedder
-from .config import StackConfig
+from .config import AUDIO_EXTENSIONS, DOCUMENT_EXTENSIONS, VIDEO_EXTENSIONS, StackConfig
 from .db import (
     check_stale_files,
     connect_sqlite,
     ensure_schema,
+    delete_images_by_ids,
     get_image_by_hash,
+    get_images_by_path,
     list_exclusions,
     list_watched_folders,
     mark_file_removed,
@@ -26,6 +29,7 @@ from .db import (
     upsert_video,
     upsert_video_segment,
 )
+from .documents import chunk_sections, extract_document
 from .ingest_telemetry import IngestTelemetry
 from .entity_memory import replace_image_entity_memory
 from .lancedb_store import LanceStore
@@ -36,7 +40,6 @@ from .text_embedder import TextEmbedder
 from .utils import sha256_text, utc_now_iso
 from .vlm_analyzer import VLMAnalyzer
 from .perception import AudioProcessor, VideoProcessor
-from .config import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +56,9 @@ class Candidate:
     text_vec: list[float] | None = None
     text_payload_hash: str = ""
     is_visual: bool = True
+    content_type: str = "image"
+    section_label: str = ""
+    chunk_index: int = -1
 
 
 def _unique_dest(directory: Path, name: str) -> Path:
@@ -184,6 +190,7 @@ class MultimodalIngestor:
         video_paths = []
         audio_paths = []
         image_paths = []
+        document_paths = []
 
         for p in paths:
             suffix = p.suffix.lower()
@@ -191,6 +198,8 @@ class MultimodalIngestor:
                 video_paths.append(p)
             elif suffix in AUDIO_EXTENSIONS:
                 audio_paths.append(p)
+            elif suffix in DOCUMENT_EXTENSIONS:
+                document_paths.append(p)
             elif suffix in self.cfg.supported_exts: # Assume rest are images if extension supported
                 image_paths.append(p)
 
@@ -199,18 +208,129 @@ class MultimodalIngestor:
             image_count=len(image_paths),
             video_count=len(video_paths),
             audio_count=len(audio_paths),
+            document_count=len(document_paths),
         )
 
-        results = {}
+        results: dict[str, Any] = {
+            "ingested": 0,
+            "skipped_duplicates": 0,
+            "relinked_paths": 0,
+            "failed": [],
+        }
+
+        def _merge(part: dict[str, Any]) -> None:
+            for key, value in part.items():
+                if key == "failed":
+                    results["failed"].extend(list(value or []))
+                elif isinstance(value, int):
+                    results[key] = int(results.get(key, 0)) + value
+                else:
+                    results[key] = value
+
         if video_paths:
-            results.update(self._ingest_videos(video_paths, safe_reprocess))
+            _merge(self._ingest_videos(video_paths, safe_reprocess))
         if audio_paths:
-            results.update(self._ingest_audios(audio_paths, safe_reprocess))
+            _merge(self._ingest_audios(audio_paths, safe_reprocess))
         if image_paths:
-            results.update(self._ingest_images(image_paths, safe_reprocess))
+            _merge(self._ingest_images(image_paths, safe_reprocess))
+        if document_paths:
+            _merge(self._ingest_documents(document_paths, safe_reprocess))
 
         self._emit("ingest_batch_completed", **results)
         return results
+
+    @staticmethod
+    def _file_hash(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+        return digest.hexdigest()
+
+    def _ingest_documents(self, paths: list[Path], safe_reprocess: bool) -> dict[str, Any]:
+        conn = connect_sqlite(self.cfg)
+        ensure_schema(conn)
+        store = LanceStore(self.cfg)
+        ingested = 0
+        skipped = 0
+        document_files = 0
+        failures: list[str] = []
+
+        for path in paths:
+            try:
+                resolved = path.expanduser().resolve()
+                stat = resolved.stat()
+                existing = get_images_by_path(conn, str(resolved))
+                unchanged = bool(existing) and all(
+                    str(row["content_type"]) == "document"
+                    and int(row["file_size"]) == stat.st_size
+                    and abs(float(row["file_mtime"]) - stat.st_mtime) <= 0.01
+                    for row in existing
+                )
+                if unchanged and not safe_reprocess:
+                    skipped += 1
+                    continue
+
+                chunks = chunk_sections(extract_document(resolved))
+                file_hash = self._file_hash(resolved)
+                candidates: list[Candidate] = []
+                new_ids: set[str] = set()
+                extension_tag = resolved.suffix.lower().lstrip(".")
+                for chunk in chunks:
+                    image_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{resolved}#chunk={chunk.chunk_index}"))
+                    new_ids.add(image_id)
+                    content_hash = sha256_text(
+                        f"{resolved}\n{file_hash}\n{chunk.chunk_index}\n{chunk.text}"
+                    )
+                    prepared = PreparedImage(
+                        source_path=resolved,
+                        normalized_path=resolved,
+                        sha256_hash=content_hash,
+                        width=0,
+                        height=0,
+                    )
+                    caption = f"{resolved.name} — {chunk.section_label}"
+                    candidates.append(
+                        Candidate(
+                            image_id=image_id,
+                            prepared=prepared,
+                            ocr_blocks=[],
+                            ocr_conf_avg=0.0,
+                            vlm=VLMOutput(
+                                caption=caption,
+                                summary=chunk.text,
+                                category="Document",
+                                tags=["document", extension_tag, chunk.section_label.lower()],
+                            ),
+                            is_visual=False,
+                            content_type="document",
+                            section_label=chunk.section_label,
+                            chunk_index=chunk.chunk_index,
+                        )
+                    )
+
+                result = self._process_candidates(candidates, safe_reprocess=True)
+                failures.extend(list(result.get("failed", [])))
+                added = int(result.get("ingested", 0))
+                ingested += added
+                if added == len(candidates):
+                    old_ids = [str(row["id"]) for row in existing if str(row["id"]) not in new_ids]
+                    delete_images_by_ids(conn, old_ids)
+                    store.delete_vectors(old_ids)
+                    conn.commit()
+                    document_files += 1
+            except Exception as exc:
+                failures.append(f"{path}: {exc}")
+                logger.exception("failed_document_ingest path=%s err=%s", str(path), str(exc))
+
+        conn.close()
+        return {
+            "ingested": ingested,
+            "document_files": document_files,
+            "document_chunks": ingested,
+            "skipped_duplicates": skipped,
+            "failed": failures,
+        }
 
     def _ingest_images(self, image_paths: list[Path], safe_reprocess: bool) -> dict[str, Any]:
         conn = connect_sqlite(self.cfg)
@@ -604,6 +724,9 @@ class MultimodalIngestor:
                         "caption": caption,
                         "summary": summary,
                         "category": category,
+                        "content_type": candidate.content_type,
+                        "section_label": candidate.section_label,
+                        "chunk_index": candidate.chunk_index,
                         "tags": tags,
                         "ocr_structured": ocr_json,
                         "ocr_confidence_avg": candidate.ocr_conf_avg,
@@ -729,7 +852,7 @@ class MultimodalIngestor:
                 if p.is_file() and p.suffix.lower() in self.cfg.supported_exts
             ]
             if not files:
-                return {"ingested": 0, "skipped_duplicates": 0, "failed": [f"{target}: no images/media found"]}
+                return {"ingested": 0, "skipped_duplicates": 0, "failed": [f"{target}: no supported files found"]}
             return self.ingest_batch(files, safe_reprocess=safe_reprocess)
         else:
             return {"ingested": 0, "skipped_duplicates": 0, "failed": [f"{target}: not found"]}
@@ -756,6 +879,8 @@ class MultimodalIngestor:
                 removed.append(entry["file_path"])
             else:
                 re_ingest.append(Path(entry["file_path"]))
+
+        re_ingest = list(dict.fromkeys(re_ingest))
 
         result: dict[str, Any] = {"changed": len(changed), "removed": removed}
         self._emit(

@@ -74,6 +74,15 @@ class LanceStore:
         table.delete(f"image_id = '{image_id}'")
         table.add([row])
 
+    def delete_vectors(self, image_ids: list[str]) -> None:
+        if not image_ids:
+            return
+        safe_ids = [image_id.replace("'", "''") for image_id in image_ids]
+        predicate = "image_id IN (" + ",".join(f"'{image_id}'" for image_id in safe_ids) + ")"
+        for table_name in (self.cfg.clip_index_name, self.cfg.text_index_name):
+            if table_name in self._table_names():
+                self.db.open_table(table_name).delete(predicate)
+
     def search_clip(self, vector: list[float], top_k: int) -> list[dict[str, Any]]:
         if self.cfg.clip_index_name not in self._table_names():
             return []

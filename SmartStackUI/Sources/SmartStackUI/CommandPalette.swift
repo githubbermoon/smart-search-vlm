@@ -211,13 +211,21 @@ struct ResultRow: View {
     
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            AsyncImage(url: URL(fileURLWithPath: result.filePath)) { image in
-                image.resizable().aspectRatio(contentMode: .fill)
-            } placeholder: {
-                Color.gray.opacity(0.2)
+            if result.source == "image" {
+                AsyncImage(url: URL(fileURLWithPath: result.filePath)) { image in
+                    image.resizable().aspectRatio(contentMode: .fill)
+                } placeholder: {
+                    Color.gray.opacity(0.2)
+                }
+                .frame(width: 40, height: 40)
+                .cornerRadius(6)
+            } else {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 6).fill(Color.indigo.opacity(0.14))
+                    Image(systemName: "doc.text.fill").foregroundStyle(.indigo)
+                }
+                .frame(width: 40, height: 40)
             }
-            .frame(width: 40, height: 40)
-            .cornerRadius(6)
             
             VStack(alignment: .leading, spacing: 2) {
                 Text(URL(fileURLWithPath: result.filePath).lastPathComponent)

@@ -44,6 +44,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             clip_content_hash TEXT NOT NULL DEFAULT '',
             is_stale INTEGER NOT NULL DEFAULT 0,
             category TEXT NOT NULL DEFAULT 'Other',
+            content_type TEXT NOT NULL DEFAULT 'image',
+            section_label TEXT NOT NULL DEFAULT '',
+            chunk_index INTEGER NOT NULL DEFAULT -1,
             file_inode INTEGER NOT NULL DEFAULT 0,
             file_size INTEGER NOT NULL DEFAULT 0,
             file_mtime REAL NOT NULL DEFAULT 0.0,
@@ -237,6 +240,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     # Migrations for existing DBs
     _migrations = [
         "ALTER TABLE images ADD COLUMN category TEXT NOT NULL DEFAULT 'Other'",
+        "ALTER TABLE images ADD COLUMN content_type TEXT NOT NULL DEFAULT 'image'",
+        "ALTER TABLE images ADD COLUMN section_label TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE images ADD COLUMN chunk_index INTEGER NOT NULL DEFAULT -1",
         "ALTER TABLE images ADD COLUMN file_inode INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE images ADD COLUMN file_size INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE images ADD COLUMN file_mtime REAL NOT NULL DEFAULT 0.0",
@@ -352,6 +358,34 @@ def get_image_by_path(conn: sqlite3.Connection, file_path: str) -> sqlite3.Row |
     return conn.execute("SELECT * FROM images WHERE file_path = ? LIMIT 1", (file_path,)).fetchone()
 
 
+def get_images_by_path(conn: sqlite3.Connection, file_path: str) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM images WHERE file_path = ? ORDER BY chunk_index ASC",
+        (file_path,),
+    ).fetchall()
+
+
+def delete_images_by_path(conn: sqlite3.Connection, file_path: str) -> list[str]:
+    rows = conn.execute("SELECT id FROM images WHERE file_path = ?", (file_path,)).fetchall()
+    image_ids = [str(row["id"]) for row in rows]
+    if not image_ids:
+        return []
+    placeholders = ",".join("?" for _ in image_ids)
+    conn.execute(f"DELETE FROM clip_vectors WHERE image_id IN ({placeholders})", image_ids)
+    conn.execute(f"DELETE FROM text_vectors WHERE image_id IN ({placeholders})", image_ids)
+    conn.execute(f"DELETE FROM images WHERE id IN ({placeholders})", image_ids)
+    return image_ids
+
+
+def delete_images_by_ids(conn: sqlite3.Connection, image_ids: list[str]) -> None:
+    if not image_ids:
+        return
+    placeholders = ",".join("?" for _ in image_ids)
+    conn.execute(f"DELETE FROM clip_vectors WHERE image_id IN ({placeholders})", image_ids)
+    conn.execute(f"DELETE FROM text_vectors WHERE image_id IN ({placeholders})", image_ids)
+    conn.execute(f"DELETE FROM images WHERE id IN ({placeholders})", image_ids)
+
+
 def get_images_by_ids(conn: sqlite3.Connection, ids: list[str]) -> dict[str, sqlite3.Row]:
     if not ids:
         return {}
@@ -384,6 +418,9 @@ def upsert_image_metadata(conn: sqlite3.Connection, row: dict[str, Any]) -> None
         "clip_content_hash": row.get("clip_content_hash", ""),
         "is_stale": int(row.get("is_stale", 0)),
         "category": row.get("category", "Other"),
+        "content_type": row.get("content_type", "image"),
+        "section_label": row.get("section_label", ""),
+        "chunk_index": int(row.get("chunk_index", -1)),
         "file_inode": int(row.get("file_inode", 0)),
         "file_size": int(row.get("file_size", 0)),
         "file_mtime": float(row.get("file_mtime", 0.0)),
@@ -396,13 +433,13 @@ def upsert_image_metadata(conn: sqlite3.Connection, row: dict[str, Any]) -> None
             id,file_path,sha256_hash,width,height,caption,summary,tags,ocr_structured,ocr_confidence_avg,
             schema_version,embedding_model_clip,embedding_model_text,embedding_dimension_clip,
             embedding_dimension_text,embedding_schema_version_clip,embedding_schema_version_text,
-            text_payload_hash,clip_content_hash,is_stale,category,
+            text_payload_hash,clip_content_hash,is_stale,category,content_type,section_label,chunk_index,
             file_inode,file_size,file_mtime,created_at,updated_at
         ) VALUES (
             :id,:file_path,:sha256_hash,:width,:height,:caption,:summary,:tags,:ocr_structured,:ocr_confidence_avg,
             :schema_version,:embedding_model_clip,:embedding_model_text,:embedding_dimension_clip,
             :embedding_dimension_text,:embedding_schema_version_clip,:embedding_schema_version_text,
-            :text_payload_hash,:clip_content_hash,:is_stale,:category,
+            :text_payload_hash,:clip_content_hash,:is_stale,:category,:content_type,:section_label,:chunk_index,
             :file_inode,:file_size,:file_mtime,:created_at,:updated_at
         )
         ON CONFLICT(id) DO UPDATE SET
@@ -426,6 +463,9 @@ def upsert_image_metadata(conn: sqlite3.Connection, row: dict[str, Any]) -> None
             clip_content_hash=excluded.clip_content_hash,
             is_stale=excluded.is_stale,
             category=excluded.category,
+            content_type=excluded.content_type,
+            section_label=excluded.section_label,
+            chunk_index=excluded.chunk_index,
             file_inode=excluded.file_inode,
             file_size=excluded.file_size,
             file_mtime=excluded.file_mtime,

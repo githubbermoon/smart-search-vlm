@@ -7,7 +7,18 @@ from mm_stack.config import StackConfig
 from mm_stack.db import connect_sqlite, ensure_schema, upsert_image_metadata
 
 
-def _seed_image(conn, cfg: StackConfig, image_id: str, file_path: str, caption: str, tags: list[str]) -> None:
+def _seed_image(
+    conn,
+    cfg: StackConfig,
+    image_id: str,
+    file_path: str,
+    caption: str,
+    tags: list[str],
+    *,
+    content_type: str = "image",
+    section_label: str = "",
+    chunk_index: int = -1,
+) -> None:
     upsert_image_metadata(
         conn,
         {
@@ -27,6 +38,9 @@ def _seed_image(conn, cfg: StackConfig, image_id: str, file_path: str, caption: 
             "embedding_dimension_text": cfg.text_dimension,
             "embedding_schema_version_clip": cfg.clip_schema_version,
             "embedding_schema_version_text": cfg.text_schema_version,
+            "content_type": content_type,
+            "section_label": section_label,
+            "chunk_index": chunk_index,
         },
     )
 
@@ -76,6 +90,31 @@ class PhotosListTests(unittest.TestCase):
         self.assertEqual(len(excluded["items"]), 1)
         self.assertTrue(excluded["path_checks_performed"])
         self.assertTrue(all(item["exists_on_disk"] for item in excluded["items"]))
+
+    def test_all_files_includes_each_document_once(self):
+        document = Path(self.tmp.name) / "guide.pdf"
+        document.write_bytes(b"fake pdf")
+        conn = connect_sqlite(self.cfg)
+        _seed_image(
+            conn, self.cfg, "doc-1", str(document), "guide.pdf — Page 1", ["document", "pdf"],
+            content_type="document", section_label="Page 1", chunk_index=0,
+        )
+        _seed_image(
+            conn, self.cfg, "doc-2", str(document), "guide.pdf — Page 2", ["document", "pdf"],
+            content_type="document", section_label="Page 2", chunk_index=1,
+        )
+        conn.commit()
+        conn.close()
+
+        images = photos_list(limit=10, content_type="image", cfg=self.cfg)
+        self.assertEqual(images["total_indexed"], 2)
+
+        all_files = photos_list(limit=10, content_type="all", cfg=self.cfg)
+        self.assertEqual(all_files["total_indexed"], 3)
+        self.assertEqual(all_files["returned"], 3)
+        documents = [item for item in all_files["items"] if item["content_type"] == "document"]
+        self.assertEqual(len(documents), 1)
+        self.assertEqual(documents[0]["section_label"], "Page 1")
 
 
 if __name__ == "__main__":

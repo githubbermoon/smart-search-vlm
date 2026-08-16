@@ -1,8 +1,8 @@
 # Smart Stack
 
-Local-first image intelligence pipeline for an Obsidian-based second brain.
+Local-first multimodal search for images, media, and documents.
 
-`smart_stack` ingests screenshots/receipts/images, extracts OCR text, generates captions and tags, stores metadata + embeddings, and lets you semantically search results from the terminal.
+`smart_stack` ingests screenshots, images, audio/video, and common document formats, stores metadata + embeddings, and lets you search everything from the native Mac app or terminal.
 
 MM-only architecture note:
 - `mm_cli.py` + `mm_stack/` is the single active ingestion/search pipeline.
@@ -11,6 +11,8 @@ MM-only architecture note:
 ## What It Does
 
 - Watches `inbox/` for images (`.png`, `.jpg`, `.jpeg`, `.webp`, `.heic`, `.heif`, `.bmp`, `.tiff`)
+- Reads documents (`.pdf`, `.txt`, `.md`, `.csv`, `.tsv`, `.json`, `.html`, `.docx`, `.pptx`, `.xlsx`)
+- Splits documents into overlapping searchable chunks while preserving page, slide, sheet, or section labels
 - Runs Apple Vision OCR (native macOS framework)
 - Runs Qwen3-VL (MLX) for caption + tags
 - Embeds combined text with Nomic text embeddings (`nomic-ai/nomic-embed-text-v1.5` by default)
@@ -46,13 +48,13 @@ smart_stack/
 
 ## Setup
 
-`pyproject.toml` does not currently pin runtime dependencies, so install them explicitly:
+Install the declared runtime dependencies into the project environment:
 
 ```bash
 cd /path/to/smart_stack
 uv venv --python 3.14
 source .venv/bin/activate
-uv pip install mlx-vlm lancedb sentence-transformers watchdog python-dotenv sqlite-utils pyobjc-framework-Vision rich
+uv sync
 ```
 
 By default Smart Stack uses:
@@ -79,7 +81,7 @@ git clone https://github.com/githubbermoon/smart-search-vlm.git
 cd smart-search-vlm/smart_stack
 uv venv --python 3.14
 source .venv/bin/activate
-uv pip install mlx-vlm lancedb sentence-transformers watchdog python-dotenv sqlite-utils pyobjc-framework-Vision rich
+uv sync
 cd SmartStackUI
 ./install_app.sh
 open ~/Applications/SmartStackUI.app
@@ -88,7 +90,7 @@ open ~/Applications/SmartStackUI.app
 Notes:
 
 - keep the git clone on disk after installing; the app uses that checkout for its Python backend
-- if your clone lives somewhere unusual, the launcher passes the correct repo root automatically
+- the installed native app records the checkout path when it is built, so reinstall it after moving the clone
 - if you want a non-default data directory, set `SMART_STACK_VAULT_ROOT` before launching the app
 
 ## Android Access With Tailscale
@@ -106,7 +108,7 @@ the demo checklist, troubleshooting, and shutdown steps.
 
 ## Run Ingestion
 
-1. Put images into `./inbox`
+1. Put supported images, media, or documents into `./inbox`, or drag a file/folder onto the Mac app
 2. Run:
 
 ```bash
@@ -173,6 +175,10 @@ source .venv/bin/activate
 
 # Ingest one image
 ./mm_cli.py ingest-image "/absolute/path/to/image.jpg"
+
+# Ingest a document or a mixed folder
+./mm_cli.py ingest-path "/absolute/path/to/manual.pdf"
+./mm_cli.py ingest-path "/absolute/path/to/mixed-folder"
 
 # Ingest inbox batch
 ./mm_cli.py ingest-inbox --limit 25
@@ -300,6 +306,7 @@ A local UI wrapper has been added at:
 It supports:
 
 - semantic and keyword image search
+- global shortcut to open or dismiss the Smart Stack search palette (defaults to `Option+Space` and can be changed in **SmartStackUI → Settings…** with `Command+,`)
 - source/score filters
 - one-click `Ingest Inbox`, `Safe Reprocess`, and `Index Notes`
 - opening result files directly
