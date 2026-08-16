@@ -1,0 +1,70 @@
+name: Release macOS App
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: package
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      TOKENIZERS_PARALLELISM: "false"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.14"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+
+      - name: Verify and test release source
+        run: |
+          uv lock --check
+          uv sync --locked --all-groups
+          uv run ruff check .
+          uv run python -m unittest discover -s tests -v
+
+      - name: Build application
+        run: SmartStackUI/local_run.sh --build-only --force-build
+
+      - name: Create application bundle
+        env:
+          APP_DEST: ${{ runner.temp }}/SmartStackUI.app
+        run: |
+          SmartStackUI/install_app.sh --dest "$APP_DEST"
+          plutil -lint "$APP_DEST/Contents/Info.plist"
+
+      - name: Package release files
+        env:
+          APP_DEST: ${{ runner.temp }}/SmartStackUI.app
+          RELEASE_DIR: ${{ runner.temp }}/release
+        run: |
+          mkdir -p "$RELEASE_DIR"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_DEST" "$RELEASE_DIR/SmartStackUI-macOS-arm64.zip"
+          shasum -a 256 "$RELEASE_DIR/SmartStackUI-macOS-arm64.zip" > "$RELEASE_DIR/SmartStackUI-macOS-arm64.zip.sha256"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_DIR: ${{ runner.temp }}/release
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            "$RELEASE_DIR/SmartStackUI-macOS-arm64.zip" \
+            "$RELEASE_DIR/SmartStackUI-macOS-arm64.zip.sha256" \
+            --generate-notes \
+            --title "Smart Stack ${GITHUB_REF_NAME}"
